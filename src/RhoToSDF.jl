@@ -318,3 +318,41 @@ function rho2sdf_tet4(
     options = Rho2sdfOptions(; element_type = TET4, kwargs...)
     return rho2sdf(taskName, X, IEN, rho; options = options)
 end
+
+"""
+    compute_and_export_nodal_densities(taskName::String, X, IEN, rho; element_type::Type{<:AbstractElement}=HEX8)
+
+Compute nodal densities from element densities and export to Paraview.
+
+# Arguments
+- `taskName::String`: Base name for output files
+- `X::Vector{Vector{Float64}}`: Mesh node coordinates
+- `IEN::Vector{Vector{Int64}}`: Element connectivity
+- `rho::Vector{Float64}`: Element densities
+- `element_type::Type{<:AbstractElement}`: Element type (HEX8 or TET4, default: HEX8)
+
+# Returns
+- `Tuple`: (mesh, ρₙ) - mesh structure and nodal densities vector
+"""
+function compute_and_export_nodal_densities(
+    taskName::String,
+    X::Vector{Vector{Float64}},
+    IEN::Vector{Vector{Int64}},
+    rho::Vector{Float64};
+    element_type::Type{<:AbstractElement} = HEX8,
+)
+    # Create mesh structure
+    shape_func = coords -> shape_functions(element_type, coords)
+    mesh = Mesh(X, IEN, rho, shape_func; element_type = element_type)
+
+    # Compute nodal densities
+    ρₙ = DenseInNodes(mesh, rho)
+
+    # Export to Paraview
+    VTK_CODE = element_type == HEX8 ? 12 : 10
+    exportToVTU(taskName * "-nodal_densities.vtu", X, IEN, VTK_CODE, ρₙ)
+
+    print_success("Exported nodal densities to: $(taskName)-nodal_densities.vtu")
+
+    return (mesh, ρₙ)
+end

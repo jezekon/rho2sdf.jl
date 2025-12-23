@@ -47,6 +47,7 @@ include("Visualizations/Visualizations.jl")
 using .Visualizations
 
 include("RhoToSDF.jl")
-export Rho2sdfOptions, rho2sdf, rho2sdf_hex8, rho2sdf_tet4
+export Rho2sdfOptions,
+    rho2sdf, rho2sdf_hex8, rho2sdf_tet4, compute_and_export_nodal_densities
 
 end # module Rho2sdf
