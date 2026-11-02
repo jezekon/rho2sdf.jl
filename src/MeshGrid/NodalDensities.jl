@@ -100,7 +100,7 @@ function DenseInNodes(
             dense_nodes[i] = ρ[Int((mesh.INE[i])[1])]
         elseif No1E > 1 && No1E < 4
             dense_nodes[i] = FilterForNodalDensity(i, Centre, mesh, ρ)
-        elseif No1E > 3 # More elements (4+) -> can use least squares fitting
+        elseif No1E > 3 # More elements (4+) -> least squares fitting (weighted average on the boundary)
             dense_nodes[i] = NodalDensityLeastSquares(i, Centre, mesh, ρ)
         end
     end
@@ -112,7 +112,8 @@ end
     FilterForNodalDensity(i::Int, Centre::Matrix, mesh::Mesh, ρ::Vector)
 
 Calculate nodal density using a distance-weighted approach for nodes
-that belong to 2 or 3 elements.
+that belong to 2 or 3 elements. Also used for boundary nodes with 4+ elements,
+where the least squares fit is not reliable.
 """
 function FilterForNodalDensity(
     i::Int,
@@ -140,7 +141,9 @@ end
     NodalDensityLeastSquares(i::Int, Centre::Matrix, mesh::Mesh, ρ::Vector)
 
 Calculate nodal density using least squares fitting for nodes that belong to 4 or more elements.
-This approach creates a linear fit based on element centers and their densities.
+A linear function is fitted through the densities in the element centres. The coordinates
+are measured from the node, so the nodal density is simply the first coefficient a₁.
+Nodes on the boundary of the domain use the weighted average (FilterForNodalDensity) instead.
 """
 function NodalDensityLeastSquares(
     i::Int,
@@ -149,72 +152,44 @@ function NodalDensityLeastSquares(
     ρ::Vector,
 )
     nnp_i = length(mesh.INE[i])
+    xₙ = mesh.X[:, i]
+
+    εₘ₁ = 1.e-8 # limit for "centres lie in one plane"
+    εₘ₂ = 2.0   # limit for "node is too far from the middle of the centres"
+
+    # Mean distance from the node to the element centres
+    L_sum = 0.0
+    for j = 1:nnp_i
+        L_sum += norm(Centre[mesh.INE[i][j], :] - xₙ)
+    end
+    L = L_sum / nnp_i
 
     A = zeros(nnp_i, mesh.nsd + 1)
     b = zeros(nnp_i)
     for j = 1:nnp_i
-        A[j, :] = [1; Centre[Int((mesh.INE[i])[j]), :]]
-        b[j] = ρ[Int((mesh.INE[i])[j])]
+        el = mesh.INE[i][j]
+        A[j, :] = [1; (Centre[el, :] - xₙ) / L] # centre position relative to the node
+        b[j] = ρ[el]
     end
-    λ, ϕ = eigen(A'A)
-    lam = LamReduction(λ)
-    if length(lam) > 1
-        Λ = Diagonal(lam)
-    else
-        Λ = lam
+
+    # Singular value decomposition A = U * Diagonal(S) * Vᵀ
+    # S (singular values) show how well the centres span 3D, F \ b gives the least squares fit
+    F = svd(A)
+
+    # Centres lie in one plane (node on a face of the domain) -> fit is not unique
+    if minimum(F.S) <= εₘ₁ * maximum(F.S)
+        return FilterForNodalDensity(i, Centre, mesh, ρ)
     end
-    if Λ == []
-        DN = mean(b)
-    else
-        poz = length(λ) - length(lam) + 1
-        b1 = ϕ' * (A' * b)
-        x1 = Λ \ b1[poz:length(b1)]
-        if poz > 1
-            zero = zeros(poz - 1)
-            x2 = vcat(zero, x1)
-        else
-            x2 = x1
-        end
-        x = ϕ * x2
-        DN = dot([1; mesh.X[:, i]], x)
-        # DN = KeepRange(dot([1; mesh.X[:, i]], x))
+
+    # Leverage: 1 = node in the middle of the centres, larger = node off to the side
+    leverage = nnp_i * sum((F.V[1, :] ./ F.S) .^ 2)
+    if leverage > εₘ₂ # fit would extrapolate -> use weighted average
+        return FilterForNodalDensity(i, Centre, mesh, ρ)
     end
+
+    a = F \ b # least squares fit
+    DN = a[1] # fit value at the node
     return DN
-end
-
-
-"""
-    LamReduction(λ::Vector)
-
-Reduce eigenvalues based on condition number thresholds to improve numerical stability.
-Returns a filtered set of eigenvalues for least squares solution.
-"""
-function LamReduction(λ::Vector)
-    lam = []
-    εₘ₁ = 1.e7
-    εₘ₂ = 3.e3
-    ε₁ = abs(maximum(λ) / minimum(λ))
-    ε₂ = abs(maximum(λ) / λ[2])
-    ε₃ = abs(maximum(λ) / λ[3])
-    if εₘ₁ > ε₁ && εₘ₂ > ε₂
-        lam = λ
-    elseif εₘ₁ < ε₁ && εₘ₂ > ε₂
-        lam = λ[2:length(λ)]
-    elseif εₘ₁ < ε₁ && εₘ₂ < ε₂
-        if εₘ₂ > ε₃
-            lam = λ[3:length(λ)]
-        else
-            lam = λ[4:length(λ)]
-        end
-    else
-        # If eigenvalue conditions don't match expected patterns
-        # The original commented out code included warnings about:
-        # - Problem with eigenvalues
-        # - The ratio between the first and last eigenvalue vs allowed ratio
-        # - The ratio between the second and last eigenvalue vs allowed ratio
-        # - Computing mean instead
-    end
-    return lam
 end
 
 """
