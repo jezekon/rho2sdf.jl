@@ -191,7 +191,10 @@ function evalDistances(
 
   update_interval_elements = max(1, div(nel, 100))
 
-  Threads.@threads for el in 1:nel
+  # :static keeps every iteration on a fixed thread, so threadid() does not change and each
+  # thread writes only into its own dist_local / xp_local. The default (:dynamic) may move
+  # a task to another thread mid-loop, and two threads could then write into the same buffer.
+  Threads.@threads :static for el in 1:nel
     # println("Element id: ", el)
     tid = Threads.threadid()
 
