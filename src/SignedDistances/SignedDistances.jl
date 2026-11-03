@@ -1,6 +1,6 @@
 module SignedDistances
 
-export evalDistances, calculate_triangle_edges, SelectProjectedNodes, Sign_Detection
+export evalDistances, calculate_triangle_edges, SelectProjectedNodes, Sign_Detection, fill_far_distances
 
 using Base.Threads
 using Einsum

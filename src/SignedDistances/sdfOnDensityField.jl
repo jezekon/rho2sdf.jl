@@ -449,3 +449,40 @@ function evalDistances(
   return dist, xp
 
 end
+
+"""
+    fill_far_distances(dist::Vector{Float64})
+
+Replace the placeholders ±1e10 by ± the largest computed distance, keeping their sign.
+
+`evalDistances` computes distances only near the iso-contour; other nodes keep 1e10. This big
+jump would distort the RBF smoothing, so the far nodes get the largest computed distance instead.
+
+# Arguments
+- `dist::Vector{Float64}`: Signed distances at the grid nodes
+
+# Returns
+- Vector{Float64}: Signed distances without placeholders
+"""
+function fill_far_distances(dist::Vector{Float64})
+  ngp = length(dist) # number of nodes in grid
+  limit = 1.0e9 # |dist| above the limit is a placeholder (big = -1.0e10 in evalDistances)
+
+  # Largest computed distance (nodes in the band around the iso-contour):
+  dmax = 0.0
+  for i in 1:ngp
+    if abs(dist[i]) < limit
+      dmax = max(dmax, abs(dist[i]))
+    end
+  end
+
+  # Placeholders -> ± dmax, the sign (inside/outside) is kept:
+  dist_filled = copy(dist)
+  for i in 1:ngp
+    if abs(dist[i]) >= limit
+      dist_filled[i] = sign(dist[i]) * dmax
+    end
+  end
+
+  return dist_filled
+end
