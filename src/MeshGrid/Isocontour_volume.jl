@@ -1,3 +1,48 @@
+"""
+    element_isocontour_volume(xe, elem_values, gp, w, iso_threshold, check_threshold, local_N, local_dN)
+
+Volume of the part of one element (node coordinates `xe`) where the interpolated nodal values
+reach `iso_threshold`, by Gauss quadrature with the points `gp` and weights `w` along each axis.
+Without `check_threshold` the whole element counts.
+
+`calculate_isocontour_volume` uses Gauss points of two types (`SVector{3}` and `SVector{15}`).
+As a separate function, the loop is compiled for each of them; in one loop over both, the type of
+`gp` and `w` is not known in advance and every Gauss point allocates.
+"""
+function element_isocontour_volume(
+  xe::SMatrix{3,8,Float64},
+  elem_values::SVector{8,Float64},
+  gp::SVector,
+  w::SVector,
+  iso_threshold::Float64,
+  check_threshold::Bool,
+  local_N::MVector{8,Float64},
+  local_dN::MMatrix{8,3,Float64}
+)
+  ngp = length(gp)
+  element_volume = 0.0
+  for k in 1:ngp, j in 1:ngp, i in 1:ngp
+    # Create local coordinates as static vector
+    local_coords = SVector{3}(gp[i], gp[j], gp[k])
+
+    # Compute shape functions and their derivatives using thread-local variables
+    compute_hex8_shape!(local_N, local_dN, local_coords[1], local_coords[2], local_coords[3])
+
+    if check_threshold
+      interpolated_value = dot(local_N, elem_values)
+      interpolated_value < iso_threshold && continue
+    end
+
+    # Calculate Jacobian (3×8 matrix × 8×3 matrix = 3×3 matrix)
+    J = xe * local_dN
+
+    # Add contribution to element volume
+    element_volume += w[i] * w[j] * w[k] * abs(det(J))
+  end
+
+  return element_volume
+end
+
 function calculate_isocontour_volume(
   mesh::Mesh,
   nodal_values::Vector{Float64},
@@ -41,36 +86,12 @@ function calculate_isocontour_volume(
 
     # Choose integration strategy based on element values
     if min_value >= iso_threshold
-      gp, w = gp_simple, w_simple
-      ngp = simple_quad_order
-      check_threshold = false
+      element_volumes[elem] = element_isocontour_volume(xe, elem_values, gp_simple, w_simple,
+        iso_threshold, false, local_N, local_dN)
     else
-      gp, w = gp_detailed, w_detailed
-      ngp = detailed_quad_order
-      check_threshold = true
+      element_volumes[elem] = element_isocontour_volume(xe, elem_values, gp_detailed, w_detailed,
+        iso_threshold, true, local_N, local_dN)
     end
-
-    element_volume = 0.0
-    for k in 1:ngp, j in 1:ngp, i in 1:ngp
-      # Create local coordinates as static vector
-      local_coords = SVector{3}(gp[i], gp[j], gp[k])
-
-      # Compute shape functions and their derivatives using thread-local variables
-      compute_hex8_shape!(local_N, local_dN, local_coords[1], local_coords[2], local_coords[3])
-
-      if check_threshold
-        interpolated_value = dot(local_N, elem_values)
-        interpolated_value < iso_threshold && continue
-      end
-
-      # Calculate Jacobian (3×8 matrix × 8×3 matrix = 3×3 matrix)
-      J = xe * local_dN
-
-      # Add contribution to element volume
-      element_volume += w[i] * w[j] * w[k] * abs(det(J))
-    end
-
-    element_volumes[elem] = element_volume
   end
 
   return sum(element_volumes)
