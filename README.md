@@ -47,11 +47,11 @@ This is the implementation of
 
 - **(a → b) Density isocontour.** The element densities are mapped to the nodes by a local least-squares fit.
   Interpolated by the element shape functions, they define the boundary as the isocontour ρ = ρ<sub>t</sub>.
-- **(c) Signed distance function.** The distance of every node of a regular Cartesian grid to this boundary is
-  computed exactly, its sign follows from the interpolated density. The grid is independent of the finite element mesh.
+- **(c) Signed distance function.** The distance of the nodes of a regular Cartesian grid near this boundary is
+  computed by projection onto it, its sign follows from the interpolated density. The grid is independent of the
+  finite element mesh.
 - **(d) Smoothing with volume preservation.** Gaussian radial basis functions turn the grid values into a smooth
-  field. A uniform shift of the field restores the volume of the SIMP design, and a clip by the design domain keeps
-  the body inside it.
+  field. A uniform shift of the field restores the volume of the SIMP design.
 - **(e) Tetrahedral mesh.** The field is meshed directly by isosurface stuffing in
   [Implicit2TetMesh.jl](https://github.com/jezekon/Implicit2TetMesh.jl).
 
