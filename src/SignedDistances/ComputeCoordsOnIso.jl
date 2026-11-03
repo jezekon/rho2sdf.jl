@@ -67,9 +67,10 @@ function compute_coords_on_iso(
   initial_ξ = zeros(SVector{3,Float64})
   _, minx, ret = optimize(opt, initial_ξ)
 
-  # Check convergence
-  if ret == :FAILURE
-    @warn "Optimization failed to converge"
+  # Check convergence: only these return codes of NLopt mean a converged foot point
+  # (:MAXEVAL_REACHED, :ROUNDOFF_LIMITED and :FAILURE do not)
+  if ret ∉ (:SUCCESS, :STOPVAL_REACHED, :FTOL_REACHED, :XTOL_REACHED)
+    @warn "Optimization failed to converge (NLopt: $ret)"
     #TODO: Save this nodes for Ipopt solver
   end
 

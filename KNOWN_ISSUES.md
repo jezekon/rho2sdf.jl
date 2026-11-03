@@ -5,7 +5,6 @@ Open issues found in the code review of rho2sdf.jl (review ids R…) and during 
 | ID | Where | Issue | Effect |
 |---|---|---|---|
 | R2 | `FilterForNodalDensity` (`src/MeshGrid/NodalDensities.jl`) | Nodes with 2–3 elements get the weights 1 − L/(1.2 L_max), where L is the distance from the node to the element centre. These are not inverse-distance weights. | Same result on uniform meshes, slightly different on irregular boundary edges. Align either the code or its description. |
-| R5 | `compute_coords_on_iso` (`src/SignedDistances/ComputeCoordsOnIso.jl`) | Only `ret == :FAILURE` of SLSQP is checked. `:ROUNDOFF_LIMITED` and `:MAXEVAL_REACHED` pass without a warning. | A non-converged foot point gives a wrong distance with no warning. The effect on the field has not been quantified (it is local). |
 | R6 | `Sign_Detection` (`src/SignedDistances/SignDetection.jl`) | For every grid node, the candidate elements are found by a linear scan over the AABBs of all elements. | Correct but O(grid nodes × elements): 457,560 × 16,490 checks on the gripper. A k-d tree or a bin grid would remove it. |
 
 Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.jl`):
@@ -15,6 +14,11 @@ Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.
   `dev`): a change of d_D here has to be made there too, or the meshed body loses the volume.
 
 Resolved:
+- R5 (only `ret == :FAILURE` of SLSQP was checked): `compute_coords_on_iso` warns for every
+  return code other than `:SUCCESS`, `:STOPVAL_REACHED`, `:FTOL_REACHED` and `:XTOL_REACHED`,
+  with the code in the message. Sphere and beam tests: 198× `:FAILURE` (warned before too),
+  58× `:ROUNDOFF_LIMITED` (new). The effect of these foot points on the field is still not
+  quantified.
 - R8 (`cantilever_beam.jl` subtracted 1 from `IEN` after `MeshInformations` had added 1):
   `MeshInformations` now finds out whether `IEN` numbers the nodes from 0 or from 1, the example
   `.mat` files use both. The subtraction in `cantilever_beam.jl` and in the beam test is removed.
