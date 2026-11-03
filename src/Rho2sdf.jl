@@ -31,9 +31,6 @@ using .DataExport
 include("SdfSmoothing/SdfSmoothing.jl")
 using .SdfSmoothing
 
-include("Visualizations/Visualizations.jl")
-using .Visualizations
-
 include("RhoToSDF.jl")
 export Rho2sdfOptions, rho2sdf
 

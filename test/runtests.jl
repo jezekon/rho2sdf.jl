@@ -219,9 +219,6 @@ using BenchmarkTools
       is_interp = true
       rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp) # interpolation == true, aproximation == false
       export_rbf_results(rbf, sdf_grid, taskName)
-     
-      # fig = visualize_stable_isosurface(fine_LSF)
-      # display(fig)
 
       # @save "Z_$(taskName)_xp.jld2" xp
       # @save "Z_$(taskName)_Mesh.jld2" mesh
