@@ -77,6 +77,16 @@ function is_point_inside_aabb(x::SubArray, min_bounds, max_bounds)
   return all(min_bounds .<= x) && all(x .<= max_bounds)
 end
 
+# Distance from a point to the AABB (zero inside it): no point of the AABB is nearer
+function distance_to_aabb(x::SubArray, min_bounds, max_bounds)
+  d² = 0.0
+  for i in eachindex(x)
+    d = max(min_bounds[i] - x[i], 0.0, x[i] - max_bounds[i])
+    d² += d^2
+  end
+  return sqrt(d²)
+end
+
 function InOut(Xₑ, xₙ)
   V = collect(eachcol(Xₑ))
   # V = [Xₑ[i] for i in 1:length(Xₑ)]
@@ -157,6 +167,10 @@ function evalDistances(
   AABB_max = linkedList.grid.AABB_max # Maximum coordinates of the AABB
   #TODO: δ nemůžu násobit grid cell size skalárem -> ale nejdelší hrana nepravidelného elementu * skalár!
   δ = 2.5 * grid.cell_size # offset for mini AABB
+  # A grid node is skipped if its distance to the AABB of a triangle (element) is not smaller than
+  # its distance found so far in this thread: the projections onto the triangle (element) lie in
+  # the AABB and could not replace it. ε covers the round-off of the projections.
+  ε = 1.0e-9 * grid.cell_size
 
   X = mesh.X   # vector of nodes positions
   IEN = mesh.IEN # ID element -> ID nodes
@@ -221,6 +235,8 @@ function evalDistances(
 
             # coordinates of the vertices of the triangle
             Xt = [x₁ x₂ x₃]
+            Xt_min = minimum(Xt, dims=2) # AABB of the triangle
+            Xt_max = maximum(Xt, dims=2)
 
             #NOTE: From this part it is same as in sdfOnTriangularMesh ->
 
@@ -239,6 +255,11 @@ function evalDistances(
               )
               v = head[ii]
               while v != -1
+                # skip the node if no projection onto the triangle can be nearer (see ε)
+                if distance_to_aabb(view(points, :, v), Xt_min, Xt_max) - ε >= abs(dist_local[tid][v])
+                  v = next[v]
+                  continue
+                end
                 x = points[:, v]
                 λ = barycentricCoordinates(x₁, x₂, x₃, n, x)
 
@@ -286,6 +307,8 @@ function evalDistances(
       if (ρₑ_max > ρₜ) # The boundary (isocontour) goes through the element
 
         Xₑ = X[:, IEN[:, el]]
+        Xₑ_min = minimum(Xₑ, dims=2) # AABB of the element
+        Xₑ_max = maximum(Xₑ, dims=2)
 
         # NOTE: two isocountour in one element:
 
@@ -310,6 +333,8 @@ function evalDistances(
 
               # coordinates of the vertices of the triangle
               Xt = [x₁ x₂ x₃]
+              Xt_min = minimum(Xt, dims=2) # AABB of the triangle
+              Xt_max = maximum(Xt, dims=2)
 
               #NOTE: From this part it is same as in sdfOnTriangularMesh ->
 
@@ -328,6 +353,11 @@ function evalDistances(
                 )
                 v = head[ii]
                 while v != -1
+                  # skip the node if no projection onto the triangle can be nearer (see ε)
+                  if distance_to_aabb(view(points, :, v), Xt_min, Xt_max) - ε >= abs(dist_local[tid][v])
+                    v = next[v]
+                    continue
+                  end
                   x = points[:, v]
                   λ = barycentricCoordinates(x₁, x₂, x₃, n, x)
 
@@ -382,6 +412,11 @@ function evalDistances(
 
           v = head[ii]
           while v != -1
+            # skip the node if no point of the element can be nearer (see ε)
+            if distance_to_aabb(view(points, :, v), Xₑ_min, Xₑ_max) - ε >= abs(dist_local[tid][v])
+              v = next[v]
+              continue
+            end
             x = points[:, v]
 
             Ξ = zeros(Float64, 3)   # local coordinates
