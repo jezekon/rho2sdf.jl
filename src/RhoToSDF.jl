@@ -13,6 +13,9 @@ Configuration options for density to SDF conversion.
     * `:interpolation`: Gaussian RBF interpolation of the raw SDF (`RBFs_smoothing`).
     * `:approximation`: Gaussian RBF approximation of the raw SDF (`RBFs_smoothing`).
   With RBFs, the field itself (weights, shift) goes to the mesher (`export_rbf_results`).
+- `domain_clip::Bool`: Clip the RBF field by the design domain (the input mesh),
+  min(φ̃ - clip_shift, d_D), with clip_shift keeping the volume (`RBFs_smoothing`). Default `true`.
+  Used by `:interpolation` and `:approximation` only; `:none` exports the raw SDF unchanged.
 """
 struct Rho2sdfOptions
     threshold_density::Union{Float64, Nothing}
@@ -20,6 +23,7 @@ struct Rho2sdfOptions
     export_nodal_densities::Bool
     export_raw_sdf::Bool
     rbf_smoothing::Symbol
+    domain_clip::Bool
 
     # Constructor with default values
     function Rho2sdfOptions(;
@@ -27,7 +31,8 @@ struct Rho2sdfOptions
         sdf_grid_setup=:manual,
         export_nodal_densities=false,
         export_raw_sdf=false,
-        rbf_smoothing=:interpolation
+        rbf_smoothing=:interpolation,
+        domain_clip=true
     )
         # Validate threshold density if provided
         if threshold_density !== nothing
@@ -51,7 +56,7 @@ struct Rho2sdfOptions
             rbf_smoothing = :interpolation
         end
 
-        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing)
+        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip)
     end
 end
 
@@ -81,7 +86,8 @@ options = Rho2sdfOptions(
     threshold_density=0.5,
     sdf_grid_setup=:automatic,
     export_nodal_densities=true,
-    rbf_smoothing=:approximation
+    rbf_smoothing=:approximation,
+    domain_clip=true
 )
 result = rho2sdf("chapadlo", X, IEN, rho, options=options)
 """
@@ -137,7 +143,8 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
     end
 
     # RBF smoothing: the RBF field itself is exported and evaluated in the mesher
-    rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_smoothing == :interpolation)
+    rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_smoothing == :interpolation;
+        domain_clip = options.domain_clip)
     export_rbf_results(rbf, sdf_grid, taskName)
 
     # Return all relevant results

@@ -7,12 +7,17 @@ using SparseArrays
 using IterativeSolvers
 using FastGaussQuadrature
 using Printf
+using LinearAlgebra
+using StaticArrays
 using Base.Threads: @threads
 
 using Rho2sdf.MeshGrid
 using Rho2sdf.SignedDistances: fill_far_distances
 using Rho2sdf.DataExport
 using Rho2sdf
+
+# Signed distance of the design domain, for the clip of the RBF field (DomainDistance):
+include("DomainDistance.jl")
 
 # Volume of the body defined by the RBF field (RBFBandVolume):
 include("CalcVolumeFromSDF.jl")
