@@ -294,7 +294,6 @@ using BenchmarkTools
       ## Read FEM mesh:
       data = matread(taskName * ".mat")
       (X, IEN, rho) = MeshInformations(data)
-      IEN = [subvector .- 1 for subvector in IEN]  # This will work
 
       # Custom options
       options = Rho2sdfOptions(

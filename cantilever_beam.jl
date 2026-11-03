@@ -7,7 +7,6 @@ taskName = "cantilever_beam_vfrac_04"
 ## Read FEM mesh:
 data = matread("test/" * taskName * ".mat")
 (X, IEN, rho) = MeshInformations(data)
-IEN = [subvector .- 1 for subvector in IEN]  # This will work
 
 # Custom options
 options = Rho2sdfOptions(

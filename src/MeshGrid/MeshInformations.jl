@@ -4,7 +4,13 @@ function MeshInformations(data::Any)
   mesh = data["msh"]
   X = mesh["X"] # Matrix
   X = [X[:, i] for i in axes(X, 2)]
-  IEN = convert(Array{Int64}, mesh["IEN"] .+ 1) # Matrix
+  # The .mat files number the nodes from 0 (chapadlo, sphere) or from 1 (cantilever_beam_*)
+  IEN = convert(Array{Int64}, mesh["IEN"]) # Matrix
+  if minimum(IEN) == 0 && maximum(IEN) == length(X) - 1
+    IEN = IEN .+ 1
+  elseif !(minimum(IEN) >= 1 && maximum(IEN) == length(X))
+    error("MeshInformations: IEN numbers the $(length(X)) nodes neither from 0 nor from 1")
+  end
   IEN = [IEN[:, i] for i in axes(IEN, 2)] # Vector{Vector{Int64}}
 
   return (X, IEN, rho)
