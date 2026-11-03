@@ -1,125 +1,89 @@
-## Overview
-This package converts density-based topology optimization results (from SIMP method) into smooth geometry defined by Signed Distance Functions (SDFs). The transformation precisely preserves the volume of the original optimized structure while eliminating jagged boundaries and intermediate density regions, making the resulting geometry suitable for manufacturing and further analysis.
+# rho2sdf.jl
+
+**Smooth, volume-preserving geometry from SIMP topology optimization.**
+
+[![DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.advengsoft.2025.104071-blue)](https://doi.org/10.1016/j.advengsoft.2025.104071)
+
+<table>
+  <thead>
+    <tr>
+      <th width="50%">SIMP result (ρ ≥ 0.5)</th>
+      <th width="50%">rho2sdf.jl</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <img src="doc/gripper_simp.png" alt="Robot gripper: elements of the SIMP result with density of at least 0.5">
+        <img src="doc/cantilever_simp.png" alt="Cantilever beam: elements of the SIMP result with density of at least 0.5">
+      </td>
+      <td>
+        <img src="doc/gripper_rho2sdf.png" alt="Robot gripper: smooth geometry extracted by rho2sdf.jl">
+        <img src="doc/cantilever_rho2sdf.png" alt="Cantilever beam: smooth geometry extracted by rho2sdf.jl">
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+Density-based topology optimization (SIMP) yields an element-wise density field that exhibits jagged boundaries due to
+the underlying finite element discretization and regions of intermediate density without physical meaning.
+rho2sdf.jl extracts a smooth geometry from this field: it constructs a signed distance function (SDF) of the density
+isocontour and refines it with radial basis functions (RBFs) while preserving the volume of the optimized structure.
+The extraction is purely geometric and requires no further optimization. The resulting boundary appears to originate
+from a much finer discretization, while the optimization retains the computational efficiency of a coarse mesh.
+
+This is the implementation of
+
+> O. Ježek, J. Kopačka, M. Isoz, D. Gabriel, P. Maršálek, M. Šotola, R. Halama.
+> *Smooth geometry extraction from SIMP topology optimization: Signed distance function approach with volume
+> preservation.* Advances in Engineering Software 212 (2026) 104071.
+> [doi:10.1016/j.advengsoft.2025.104071](https://doi.org/10.1016/j.advengsoft.2025.104071)
+
+## How it works
 
 <p align="center">
-  <img src="doc/Cantilever_beam-RAW.png" width="45%" alt="Raw topology optimization result" />
-  <img src="doc/Cantilever_beam-smooth_SDF_Approx.png" width="45%" alt="Smoothed SDF approximation" />
+  <img src="doc/pipeline.jpg" width="90%" alt="Stages of the method: (a) element densities, (b) nodal densities and their isocontour, (c) signed distance function on a Cartesian grid, (d) smoothed geometry, (e) tetrahedral mesh">
 </p>
 
-## Function Input
-Main function for transforming TO results into an implicit geometric representation using SDF:
-```julia
-rho2sdf(taskName, X, IEN, rho; options=Rho2sdfOptions())
-```
+- **(a → b) Density isocontour.** The element densities are mapped to the nodes by a local least-squares fit.
+  Interpolated by the element shape functions, they define the boundary as the isocontour ρ = ρ<sub>t</sub>.
+- **(c) Signed distance function.** The distance of every node of a regular Cartesian grid to this boundary is
+  computed exactly, its sign follows from the interpolated density. The grid is independent of the finite element mesh.
+- **(d) Smoothing with volume preservation.** Gaussian radial basis functions turn the grid values into a smooth
+  field. A uniform shift of the field restores the volume of the SIMP design, and a clip by the design domain keeps
+  the body inside it.
+- **(e) Tetrahedral mesh.** The field is meshed directly by isosurface stuffing in
+  [Implicit2TetMesh.jl](https://github.com/jezekon/Implicit2TetMesh.jl).
 
-### Parameters:
-- `taskName::String`: Base name for output files
-- `X::Vector{Vector{Float64}}`: Mesh node coordinates
-- `IEN::Vector{Vector{Int64}}`: Element connectivity (indices of element nodes)
-- `rho::Vector{Float64}`: Element densities
-- `options::Rho2sdfOptions`: Configuration options (optional)
-
-### Return Value:
-- `Tuple`: (sdf_grid, sdf_dists, rbf)
-  - `sdf_grid`: grid on which the raw SDF is computed
-  - `sdf_dists`: raw SDF at the grid nodes (positive inside)
-  - `rbf`: RBF field (weights, kernel, volume shift and diagnostics), `nothing` for `rbf_smoothing=:none`
-
-### Output Files:
-Depending on `rbf_smoothing`, one of the following inputs for the mesher ([Implicit2TetMesh.jl](https://github.com/jezekon/Implicit2TetMesh.jl)) is written:
-
-| `rbf_smoothing` | File | Content | Mesher |
-|---|---|---|---|
-| `:none` | `Z_<taskName>_SDF_B-<h>.jld2`, `Z_<taskName>_Grid_B-<h>.jld2` | raw SDF on the grid (`fine_sdf`, `fine_grid`) | `generate_tetrahedral_mesh(grid_file, sdf_file, ...)` |
-| `:interpolation`, `:approximation` | `Z_<taskName>_RBF_B-<h>_<Interpolation\|Approximation>.jld2` | RBF field: weights, origin, `h`, `sigma`, `threshold`, `shift`; with the domain clip also `clip_shift` and the design domain (below) | `load_rbf_source(file)`, then `generate_tetrahedral_mesh(source, ...; dx=source.h)` with `cut_points=:bisection` |
-
-The RBF field is never sampled back on a grid: the mesher evaluates the smooth field wherever it needs it. The file `<taskName>_B-<h>_RBF_<...>.vti` (the field to be meshed, sampled at h/2; clipped with the domain clip) is only for viewing in Paraview.
-
-### Domain clip
-The smoothed field φ̃ can reach slightly beyond the design domain D (the input hex mesh) where the body touches the domain boundary. With `domain_clip=true` (default) the body is
-
-    φ(x) = min(φ̃(x) - clip_shift, d_D(x)) ≥ 0,
-
-where d_D is the signed distance of D (positive inside) and `clip_shift` is found so that the volume of this clipped body equals the volume of the SIMP result. d_D is the distance to the boundary faces of the hex mesh (faces of one element only, each split into 4 triangles around its centre), positive inside the elements; it is exact for planar faces.
-
-The JLD2 keeps every key of the unclipped field with its meaning: `shift` is the volume-keeping shift of φ̃ alone, so a reader that does not know the clip meshes the unclipped body. The clip adds:
-
-| Key | Content |
-|---|---|
-| `domain_clip` | `true` if the clip was used (also written as `false` without it) |
-| `clip_shift` | shift of the clipped field φ |
-| `clip_volume` | volume of {φ ≥ 0} (equals `target_volume`) |
-| `volume_outside` | volume of {φ̃ ≥ shift} outside D, which the clip removes |
-| `domain_nodes`, `domain_elements` | the design domain: hex mesh nodes (3 × nodes) and elements (8 × elements, node order of `Mesh`) |
-
-To mesh the clipped body, the mesher has to evaluate min(φ̃ - `clip_shift`, d_D) with d_D built from `domain_nodes` and `domain_elements` as described above. Implicit2TetMesh.jl does this: `load_rbf_source(file)` returns its `ClippedRBFSDF` for a file with `domain_clip = true` (branch `dev`), with the same d_D (a port of `DomainDistance`).
-
-## Rho2sdfOptions
-
-The `Rho2sdfOptions` struct allows for customization of the SDF generation process:
+## Quick start
 
 ```julia
-Rho2sdfOptions(;
-    threshold_density=0.5,          # value for isocontour (0, 1)
-    sdf_grid_setup=:manual,         # manual/automatic grid setup
-    export_nodal_densities=true,    # export nodal field to Paraview
-    export_raw_sdf=true,            # export non-smoothed SDF to Paraview
-    rbf_smoothing=:interpolation,   # none/interpolation/approximation of SDF using RBFs
-    domain_clip=true                # clip the RBF field by the design domain
-)
+] add https://github.com/kopacja/rho2sdf.jl
 ```
-
-### Options:
-
-#### threshold_density::Union{Float64, Nothing}
-- Threshold density value in range [0,1] used for isosurface generation
-- If `nothing`, it will be automatically calculated from volume fraction
-
-#### sdf_grid_setup::Symbol
-- SDF grid step configuration. Valid values:
-  - `:automatic`: Uses original mesh properties for grid step
-  - `:manual` (default): Uses interactive grid setup allowing user configuration
-
-#### export_nodal_densities::Bool
-- Controls whether nodal densities are exported to VTU format
-- Default: `false`
-
-#### export_raw_sdf::Bool
-- Controls whether raw SDF values are exported to VTI format
-- Default: `false`
-
-#### rbf_smoothing::Symbol
-- Smoothing of the raw SDF with Gaussian RBFs (σ = grid step) centred at the grid nodes. Valid values:
-  - `:none`: No smoothing, the raw SDF on the grid is the output
-  - `:interpolation` (default): RBF interpolation, the field passes through the raw SDF at the grid nodes
-  - `:approximation`: RBF approximation (normalized Gaussian quasi-interpolation), smoother than the interpolation, does not pass through the nodal values
-- For both RBF variants, the field is shifted so that the volume enclosed by its zero level equals the volume of the SIMP result
-
-#### domain_clip::Bool
-- Clips the RBF field by the design domain, min(φ̃ - clip_shift, d_D), with `clip_shift` keeping the volume (see [Domain clip](#domain-clip))
-- Used by `:interpolation` and `:approximation` only; `:none` exports the raw SDF unchanged
-- Default: `true`
-
-## Example Usage
 
 ```julia
-# Basic usage with default options
-result = rho2sdf("chapadlo", X, IEN, rho)
+using Rho2sdf
 
-# Custom options
-options = Rho2sdfOptions(
-    threshold_density=0.5,
-    sdf_grid_setup=:manual,
-    export_nodal_densities=true,
-    export_raw_sdf=true,
-    rbf_smoothing=:approximation,
-    domain_clip=false               # the old behaviour: no clip
-)
-result = rho2sdf("chapadlo", X, IEN, rho, options=options)
+# X: node coordinates, IEN: 8-node hexahedra, rho: element densities of a SIMP result
+rho2sdf("beam", X, IEN, rho; options = Rho2sdfOptions(sdf_grid_setup = :automatic))
 ```
 
-## TODO List
+The smooth field is saved to `Z_beam_RBF_*.jld2` for Implicit2TetMesh.jl, together with a VTI file for ParaView.
+Examples: [`cantilever_beam.jl`](cantilever_beam.jl) and [`chapadlo_run.jl`](chapadlo_run.jl) (the gripper) with the
+inputs in [`test/`](test). All options: `?Rho2sdfOptions`.
 
-- [ ] Improvements to the calculation of nodal densities
-- [ ] Use IPopt library for points where local coordinates were not found
-- [ ] Extend implementation to include tetrahedral elements
+## Citation
+
+```bibtex
+@article{Jezek2026,
+  title   = {Smooth geometry extraction from {SIMP} topology optimization: Signed distance function
+             approach with volume preservation},
+  author  = {Je{\v{z}}ek, Ond{\v{r}}ej and Kopa{\v{c}}ka, J{\'a}n and Isoz, Martin and Gabriel, Du{\v{s}}an
+             and Mar{\v{s}}{\'a}lek, Pavel and {\v{S}}otola, Martin and Halama, Radim},
+  journal = {Advances in Engineering Software},
+  volume  = {212},
+  pages   = {104071},
+  year    = {2026},
+  doi     = {10.1016/j.advengsoft.2025.104071}
+}
+```
