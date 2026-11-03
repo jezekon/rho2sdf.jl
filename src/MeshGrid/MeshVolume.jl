@@ -20,9 +20,9 @@ function calculate_mesh_volume(
   gp = SVector{quad_order}(gp_raw)
   w = SVector{quad_order}(w_raw)
   
-  # Atomic variables for thread-safe volume accumulation
-  domain_volume = Atomic{Float64}(0.0)
-  TO_volume = Atomic{Float64}(0.0)
+  # Volume of each element, summed after the parallel loop so that the result does not depend
+  # on the order in which the threads finish
+  elem_volumes = zeros(length(IEN))
   
   # Parallel processing of elements
   @threads for elem in 1:length(IEN)
@@ -48,14 +48,12 @@ function calculate_mesh_volume(
       elem_volume += w[i] * w[j] * w[k] * abs(det(J))
     end
     
-    # Thread-safe update of volumes
-    atomic_add!(domain_volume, elem_volume)
-    atomic_add!(TO_volume, elem_volume * rho[elem])
+    elem_volumes[elem] = elem_volume
   end
   
-  # Retrieve final volume values
-  final_domain_volume = domain_volume[]
-  final_TO_volume = TO_volume[]
+  # Final volume values
+  final_domain_volume = sum(elem_volumes)
+  final_TO_volume = sum(elem_volumes .* rho)
   
   # Output results
   println("Topology optimization domain volume: ", round(final_domain_volume, sigdigits=6))

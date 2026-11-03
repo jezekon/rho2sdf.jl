@@ -18,7 +18,9 @@ function calculate_isocontour_volume(
   w_simple = SVector{simple_quad_order}(w_simple)
 
   num_elements = size(IEN, 2)
-  total_volume = Atomic{Float64}(0.0)
+  # Volume of each element, summed after the parallel loop so that the result does not depend
+  # on the order in which the threads finish
+  element_volumes = zeros(num_elements)
 
   # Parallel element processing
   @threads for elem in 1:num_elements
@@ -68,10 +70,10 @@ function calculate_isocontour_volume(
       element_volume += w[i] * w[j] * w[k] * abs(det(J))
     end
 
-    atomic_add!(total_volume, element_volume)
+    element_volumes[elem] = element_volume
   end
 
-  return total_volume[]
+  return sum(element_volumes)
 end
 
 function find_threshold_for_volume(mesh::Mesh,
