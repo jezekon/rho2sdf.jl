@@ -29,10 +29,15 @@ struct RBFBandVolume
     band_cells::Vector{NTuple{3,Int}}         # grid cells (i, j, k) of the band
     band_samples::Vector{Array{Float64,3}}    # φ̃ on the sub-grid of each band cell
     domain_samples::Vector{Array{Float64,3}}  # d_D on the same sub-grid, NOT_CLIPPED if not clipped
+    band_extrema::Vector{NTuple{2,Float64}}   # (min, max) of the φ̃ samples of each band cell
+    domain_extrema::Vector{NTuple{2,Float64}} # (min, max) of the d_D samples, (Inf, Inf) if not clipped
 end
 
 # Domain samples of a band cell that the clip does not change
 const NOT_CLIPPED = Array{Float64,3}(undef, 0, 0, 0)
+
+# (min, max) of the samples of a band cell; (Inf, Inf) for NOT_CLIPPED, which bounds nothing
+sample_extrema(samples::Array{Float64,3}) = isempty(samples) ? (Inf, Inf) : extrema(samples)
 
 """
     cell_samples(field, cell, refine)
@@ -89,7 +94,8 @@ function RBFBandVolume(
     end
 
     domain_samples = fill(NOT_CLIPPED, length(band_cells))
-    return RBFBandVolume(h, refine, n_inside_cells, band_cells, band_samples, domain_samples)
+    return RBFBandVolume(h, refine, n_inside_cells, band_cells, band_samples, domain_samples,
+        sample_extrema.(band_samples), sample_extrema.(domain_samples))
 end
 
 """
@@ -169,7 +175,8 @@ function RBFBandVolume(
         end
     end
 
-    return RBFBandVolume(h, refine, n_inside_cells, band_cells, band_samples, domain_samples)
+    return RBFBandVolume(h, refine, n_inside_cells, band_cells, band_samples, domain_samples,
+        sample_extrema.(band_samples), sample_extrema.(domain_samples))
 end
 
 """
@@ -200,6 +207,7 @@ are split into sub-cells whose corners are every `step`-th sample (spacing `step
 A sub-cell with all corners ≥ shift counts fully. If the surface passes through it, the inside
 part is integrated by 3×3×3 Gauss quadrature of the trilinear interpolation of the corners.
 With the domain clip, the corners of the clipped cells are min(φ̃, d_D + shift) (`sample_value`).
+A band cell whose samples all lie on one side of the shift (by their extrema) is not split.
 """
 function band_volume(V::RBFBandVolume, shift::Float64, step::Int)
     # Gauss points and weights on [0, 1]:
@@ -215,6 +223,23 @@ function band_volume(V::RBFBandVolume, shift::Float64, step::Int)
         samples = V.band_samples[b]
         distances = V.domain_samples[b]
         volume = 0.0
+
+        # Cells the surface does not pass through need no sub-cells: the extrema of the samples
+        # bound the corner values (`sample_value`) of all sub-cells
+        sample_min, sample_max = V.band_extrema[b]
+        domain_min, domain_max = V.domain_extrema[b]
+        if min(sample_max, domain_max + shift) < shift
+            continue                                # outside: no sub-cell has a corner ≥ shift
+        elseif min(sample_min, domain_min + shift) >= shift
+            # inside: every sub-cell counts fully, added one by one as in the loop below, so
+            # that the sum is the same to the last bit
+            for _ = 1:n_sub^3
+                volume += sub_volume
+            end
+            cell_volumes[b] = volume
+            continue
+        end
+
         for sk = 0:n_sub-1
             for sj = 0:n_sub-1
                 for si = 0:n_sub-1
