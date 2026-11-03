@@ -35,15 +35,9 @@ using BenchmarkTools
 
   if (RUN_DOMAIN_CLIP)
     @testset "Domain clip" begin
-      # Design domain: the block [-1, 1] × [-0.5, 0.5]² of 8 × 4 × 4 elements (built here: the
-      # primitive "block" fills a Dict from several threads). Body: the bar
+      # Design domain: the block [-1, 1] × [-0.5, 0.5]² of 8 × 4 × 4 elements. Body: the bar
       # [-1, 0] × [-0.25, 0.25]², which touches the domain face x = -1.
-      node(i, j, k) = 1 + i + 9 * (j + 5 * k)
-      X = [[-1.0 + 0.25 * i, -0.5 + 0.25 * j, -0.5 + 0.25 * k] for k = 0:4 for j = 0:4 for i = 0:8]
-      IEN = [[node(i, j, k), node(i + 1, j, k), node(i + 1, j + 1, k), node(i, j + 1, k),
-              node(i, j, k + 1), node(i + 1, j, k + 1), node(i + 1, j + 1, k + 1),
-              node(i, j + 1, k + 1)]
-             for k = 0:3 for j = 0:3 for i = 0:7]
+      X, IEN, _, _ = selectPrimitiveGeometry("block", [8, 4, 4])
       centres = [sum(X[element]) / 8 for element in IEN]
       rho = [c[1] < 0 && abs(c[2]) < 0.25 && abs(c[3]) < 0.25 ? 1.0 : 0.0 for c in centres]
       mesh = Mesh(X, IEN, rho, hex8_shape)

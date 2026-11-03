@@ -8,7 +8,6 @@ Open issues found in the code review of rho2sdf.jl (review ids R…) and during 
 | R5 | `compute_coords_on_iso` (`src/SignedDistances/ComputeCoordsOnIso.jl`) | Only `ret == :FAILURE` of SLSQP is checked. `:ROUNDOFF_LIMITED` and `:MAXEVAL_REACHED` pass without a warning. | A non-converged foot point gives a wrong distance with no warning. The effect on the field has not been quantified (it is local). |
 | R6 | `Sign_Detection` (`src/SignedDistances/SignDetection.jl`) | For every grid node, the candidate elements are found by a linear scan over the AABBs of all elements. | Correct but O(grid nodes × elements): 457,560 × 16,490 checks on the gripper. A k-d tree or a bin grid would remove it. |
 | R8 | `cantilever_beam.jl` | Subtracts 1 from `IEN` after `MeshInformations` has already added 1. | Correct only for `.mat` inputs with 0-based `IEN`. The example `.mat` files use different index bases. |
-| D2 | `TestGeometryBlock` (`src/PrimitiveGeometries/PrimitiveGeometries.jl`) | Fills the `Dict` `node_map` inside `@threads`. | Crashes (`UndefRefError` in `rehash!`) or corrupts the map on more than one thread. The domain-clip test builds its block itself. |
 
 Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.jl`):
 - d_D approximates a warped (bilinear) element face by 4 triangles around the face centre; it is
@@ -20,6 +19,8 @@ Resolved:
 - D1 (element volumes summed with `atomic_add!` inside `@threads`, so the last bits of `V_domain`,
   `V_frac` and the target volume changed from run to run): `calculate_mesh_volume` and
   `calculate_isocontour_volume` store the element volumes and sum them after the loop.
+- D2 (`TestGeometryBlock` and `TestGeometryCube` filled the `Dict` `node_map` inside `@threads`
+  and crashed on several threads): the node numbers are computed by a function instead.
 
 Resolved by the removal of the grid-sampled RBF path:
 - R7 (Float32 kernel matrix and weights, default `cg` tolerance): the kernel matrix is now assembled

@@ -105,7 +105,10 @@ function TestGeometryCube(max_elements::Int64)
     # Preallocate arrays
     total_nodes = (max_elements + 1)^3
     nodes = zeros(Float64, total_nodes, 3)
-    node_map = Dict()
+
+    # Node number of the lattice point (i, j, k); a function, not a Dict, as the loops below run
+    # in parallel and a Dict must not be filled from several threads
+    node_id((i, j, k)) = i * (max_elements + 1)^2 + j * (max_elements + 1) + k + 1
 
     # Calculate nodes in parallel
     @threads for i in 0:max_elements
@@ -115,9 +118,7 @@ function TestGeometryCube(max_elements::Int64)
                 y = -half_side + j * delta
                 z = -half_side + k * delta
 
-                new_node_id = i * (max_elements + 1)^2 + j * (max_elements + 1) + k + 1
-                nodes[new_node_id, :] = [x, y, z]
-                node_map[(i, j, k)] = new_node_id
+                nodes[node_id((i, j, k)), :] = [x, y, z]
             end
         end
     end
@@ -135,10 +136,10 @@ function TestGeometryCube(max_elements::Int64)
                 corners = [(i, j, k), (i+1, j, k), (i+1, j+1, k), (i, j+1, k),
                            (i, j, k+1), (i+1, j, k+1), (i+1, j+1, k+1), (i, j+1, k+1)]
 
-                element_nodes = [node_map[c] for c in corners]
+                element_nodes = [node_id(c) for c in corners]
                 elements[element_idx, :] = element_nodes
 
-                element_center_coords = [nodes[node_id, :] for node_id in element_nodes]
+                element_center_coords = [nodes[n, :] for n in element_nodes]
                 element_center = mean(hcat(element_center_coords...), dims=2)
                 elements_center[element_idx, :] = element_center
 
@@ -166,7 +167,9 @@ function TestGeometryBlock(N::Vector{Int64})
     total_nodes = prod(N .+ 1)
     nodes = zeros(Float64, total_nodes, 3)
 
-    node_map = Dict()
+    # Node number of the lattice point (i, j, k); a function, not a Dict, as the loops below run
+    # in parallel and a Dict must not be filled from several threads
+    node_id((i, j, k)) = i * (N[3] + 1) * (N[2] + 1) + j * (N[3] + 1) + k + 1
 
     # Calculate nodes in parallel
     @threads for i in 0:N[1]
@@ -176,9 +179,7 @@ function TestGeometryBlock(N::Vector{Int64})
                 y = -Lxyz[2]/2 + j * delta
                 z = -Lxyz[3]/2 + k * delta
 
-                new_node_id = i * (N[3] + 1) * (N[2] + 1)  + j * (N[3] + 1) + k + 1
-                nodes[new_node_id, :] = [x, y, z]
-                node_map[(i, j, k)] = new_node_id
+                nodes[node_id((i, j, k)), :] = [x, y, z]
             end
         end
     end
@@ -196,10 +197,10 @@ function TestGeometryBlock(N::Vector{Int64})
                 corners = [(i, j, k), (i+1, j, k), (i+1, j+1, k), (i, j+1, k),
                            (i, j, k+1), (i+1, j, k+1), (i+1, j+1, k+1), (i, j+1, k+1)]
 
-                element_nodes = [node_map[c] for c in corners]
+                element_nodes = [node_id(c) for c in corners]
                 elements[element_idx, :] = element_nodes
 
-                element_center_coords = [nodes[node_id, :] for node_id in element_nodes]
+                element_center_coords = [nodes[n, :] for n in element_nodes]
                 element_center = mean(hcat(element_center_coords...), dims=2)
                 elements_center[element_idx, :] = element_center
 
