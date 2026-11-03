@@ -182,6 +182,62 @@ function rbf_sample(weights::Array{Float64,3}, threshold::Float64, refine::Int)
 end
 
 """
+    rbf_cell_samples(weights, threshold, cell, refine)
+
+RBF sum (`rbf_value`) on the sub-grid with spacing h/`refine` of the grid cell `cell` = (i, j, k),
+the samples of `cell_samples` for the RBF field. As in `rbf_sample`, the 1D kernel values exp(-Δ²)
+are shared along the lines of the sub-grid instead of computed at every sample.
+"""
+function rbf_cell_samples(weights::Array{Float64,3}, threshold::Float64, cell::NTuple{3,Int}, refine::Int)
+    nx, ny, nz = size(weights)
+    reach = sqrt(-log(threshold))   # kernel reach in cell sizes
+    samples = Array{Float64,3}(undef, refine + 1, refine + 1, refine + 1)
+
+    # 1D kernel values along x, y, z (only the entries in the kernel range are used)
+    gx = zeros(nx)
+    gy = zeros(ny)
+    gz = zeros(nz)
+
+    for sk = 0:refine
+        z = cell[3] - 1 + sk / refine
+        k_range = kernel_range(z, reach, nz)
+        for k in k_range
+            gz[k+1] = exp(-(k - z)^2)
+        end
+        for sj = 0:refine
+            y = cell[2] - 1 + sj / refine
+            j_range = kernel_range(y, reach, ny)
+            for j in j_range
+                gy[j+1] = exp(-(j - y)^2)
+            end
+            for si = 0:refine
+                x = cell[1] - 1 + si / refine
+                i_range = kernel_range(x, reach, nx)
+                for i in i_range
+                    gx[i+1] = exp(-(i - x)^2)
+                end
+
+                value = 0.0
+                @inbounds for k in k_range
+                    for j in j_range
+                        gyz = gz[k+1] * gy[j+1]
+                        gyz > threshold || continue
+                        for i in i_range
+                            g = gyz * gx[i+1]
+                            if g > threshold
+                                value += weights[i+1, j+1, k+1] * g
+                            end
+                        end
+                    end
+                end
+                samples[si+1, sj+1, sk+1] = value
+            end
+        end
+    end
+    return samples
+end
+
+"""
     find_shift(volume_of, target_volume, h, body)
 
 Shift in [-h, h] for which the volume `volume_of(shift)` (`RBFBandVolume`) equals the target,

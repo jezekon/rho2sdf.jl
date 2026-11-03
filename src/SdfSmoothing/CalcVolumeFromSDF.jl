@@ -9,7 +9,7 @@ the stored values with the shift:
 1. The grid cells are sorted by the raw SDF at their corners. Cells deeper than `band_width`·h
    inside count fully, cells deeper than `band_width`·h outside are skipped (the smoothing and
    the shift move the surface by less than h). The remaining cells form the band around the surface.
-2. In each band cell, φ̃ is sampled on a sub-grid with spacing h/`refine`.
+2. In each band cell, φ̃ is sampled on a sub-grid with spacing h/`refine` (`rbf_cell_samples`).
 3. `volume_of(shift)` adds up the inside parts of the sub-cells (`band_volume`).
 
 The body clipped by the design domain has a second constructor (below).
@@ -83,10 +83,9 @@ function RBFBandVolume(
     end
 
     # 2. φ̃ on the sub-grid of each band cell:
-    rbf_field = position -> rbf_value(weights, threshold, position)
     band_samples = Vector{Array{Float64,3}}(undef, length(band_cells))
     @threads :static for b in eachindex(band_cells)
-        band_samples[b] = cell_samples(rbf_field, band_cells[b], refine)
+        band_samples[b] = rbf_cell_samples(weights, threshold, band_cells[b], refine)
     end
 
     domain_samples = fill(NOT_CLIPPED, length(band_cells))
@@ -151,7 +150,6 @@ function RBFBandVolume(
 
     # 2. φ̃ and d_D on the sub-grid of each band cell:
     unclipped_index = Dict(zip(unclipped.band_cells, eachindex(unclipped.band_cells)))
-    rbf_field = position -> rbf_value(weights, threshold, position)
     domain_field = position -> d_D(origin + h * Point(position))
     band_samples = Vector{Array{Float64,3}}(undef, length(band_cells))
     domain_samples = Vector{Array{Float64,3}}(undef, length(band_cells))
@@ -160,7 +158,7 @@ function RBFBandVolume(
         if haskey(unclipped_index, cell)
             band_samples[b] = unclipped.band_samples[unclipped_index[cell]]
         else
-            band_samples[b] = cell_samples(rbf_field, cell, refine)
+            band_samples[b] = rbf_cell_samples(weights, threshold, cell, refine)
         end
 
         i, j, k = cell
