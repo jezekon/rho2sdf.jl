@@ -1,10 +1,6 @@
 # Known issues
 
-Open issues found in the code review of rho2sdf.jl (review ids R…) and during the work on the domain clip (D…).
-
-| ID | Where | Issue | Effect |
-|---|---|---|---|
-| R6 | `Sign_Detection` (`src/SignedDistances/SignDetection.jl`) | For every grid node, the candidate elements are found by a linear scan over the AABBs of all elements. | Correct but O(grid nodes × elements): 457,560 × 16,490 checks on the gripper. A k-d tree or a bin grid would remove it. |
+Open issues found in the code review of rho2sdf.jl (review ids R…) and during the work on the domain clip (D…): none at the moment.
 
 Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.jl`):
 - d_D approximates a warped (bilinear) element face by 4 triangles around the face centre; it is
@@ -20,6 +16,10 @@ Resolved:
   with the code in the message. Sphere and beam tests: 198× `:FAILURE` (warned before too),
   58× `:ROUNDOFF_LIMITED` (new). The effect of these foot points on the field is still not
   quantified.
+- R6 (`Sign_Detection` found the candidate elements of every grid node by a scan over the AABBs
+  of all elements): the candidate elements are collected once, each element testing only the grid
+  nodes of its mini AABB grid (`calculateMiniAABB_grid`, one cell of margin), in the same ascending
+  order. Gripper (76,050 grid nodes): 18.7 s → 0.4 s, the signs are unchanged.
 - R8 (`cantilever_beam.jl` subtracted 1 from `IEN` after `MeshInformations` had added 1):
   `MeshInformations` now finds out whether `IEN` numbers the nodes from 0 or from 1, the example
   `.mat` files use both. The subtraction in `cantilever_beam.jl` and in the beam test is removed.

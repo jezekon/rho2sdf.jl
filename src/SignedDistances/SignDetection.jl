@@ -15,14 +15,30 @@ function Sign_Detection(mesh::Mesh, grid::Grid, points::Matrix, ρₙ::Vector, �
     element_aabbs[el] = (vec(aabb[1]), vec(aabb[2]))
   end
 
+  # Candidate elements of each grid node (ascending): the elements whose AABB contains it. Each
+  # element tests only the grid nodes of its mini AABB grid, with one cell of margin, not the whole
+  # grid.
+  N = grid.N
+  node_elements = [Int[] for _ in 1:ngp]
+  for el in 1:nel
+    Xₑ = X[:, IEN[:, el]]
+    Is = MeshGrid.calculateMiniAABB_grid(Xₑ, grid.cell_size, N, grid.AABB_min, grid.AABB_max, mesh.nsd)
+    for I ∈ Is
+      v = Int(I[3] * (N[1] + 1) * (N[2] + 1) + I[2] * (N[1] + 1) + I[1] + 1) # node ID
+      if is_point_inside_aabb(view(points, :, v), element_aabbs[el]...)
+        push!(node_elements[v], el)
+      end
+    end
+  end
+
   p_nodes = Progress(ngp, 1, "Processing grid nodes: ", 30)
   counter_nodes = Atomic{Int}(0)
   update_interval_nodes = max(1, div(ngp, 100))
 
   @threads for i in 1:ngp
     x = @view points[:, i]
-    # Find potential elements that contain the point using AABB (Axis-Aligned Bounding Box) check
-    candidate_elements = [el for el in 1:nel if is_point_inside_aabb(x, element_aabbs[el]...)]
+    # Potential elements that contain the point (AABB check above, AABB = Axis-Aligned Bounding Box)
+    candidate_elements = node_elements[i]
     max_local = 10.0
     none = length(candidate_elements)
     ρₙₑ = ρₙ[IEN[:, candidate_elements]] # Get nodal densities for candidate elements

@@ -72,9 +72,10 @@ function compute_aabb(points::SubArray)
   return min_bounds, max_bounds
 end
 
-# Function to check if a point is inside the AABB
+# Function to check if a point is inside the AABB (without temporary arrays: Sign_Detection calls
+# it for every grid node near every element)
 function is_point_inside_aabb(x::SubArray, min_bounds, max_bounds)
-  return all(min_bounds .<= x) && all(x .<= max_bounds)
+  return all(i -> min_bounds[i] <= x[i] <= max_bounds[i], eachindex(x))
 end
 
 # Distance from a point to the AABB (zero inside it): no point of the AABB is nearer
