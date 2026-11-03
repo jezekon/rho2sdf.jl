@@ -4,7 +4,6 @@ Open issues found in the code review of rho2sdf.jl (review ids R…) and during 
 
 | ID | Where | Issue | Effect |
 |---|---|---|---|
-| R2 | `FilterForNodalDensity` (`src/MeshGrid/NodalDensities.jl`) | Nodes with 2–3 elements get the weights 1 − L/(1.2 L_max), where L is the distance from the node to the element centre. These are not inverse-distance weights. | Same result on uniform meshes, slightly different on irregular boundary edges. Align either the code or its description. |
 | R6 | `Sign_Detection` (`src/SignedDistances/SignDetection.jl`) | For every grid node, the candidate elements are found by a linear scan over the AABBs of all elements. | Correct but O(grid nodes × elements): 457,560 × 16,490 checks on the gripper. A k-d tree or a bin grid would remove it. |
 
 Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.jl`):
@@ -14,6 +13,8 @@ Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.
   `dev`): a change of d_D here has to be made there too, or the meshed body loses the volume.
 
 Resolved:
+- R2 (weights of `FilterForNodalDensity` described as distance-weighted, while they are
+  1 − L/(1.2 L_max)): the code is unchanged, its docstring now gives the weights.
 - R5 (only `ret == :FAILURE` of SLSQP was checked): `compute_coords_on_iso` warns for every
   return code other than `:SUCCESS`, `:STOPVAL_REACHED`, `:FTOL_REACHED` and `:XTOL_REACHED`,
   with the code in the message. Sphere and beam tests: 198× `:FAILURE` (warned before too),

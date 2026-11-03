@@ -114,6 +114,11 @@ end
 Calculate nodal density using a distance-weighted approach for nodes
 that belong to 2 or 3 elements. Also used for boundary nodes with 4+ elements,
 where the least squares fit is not reliable.
+
+The nodal density is the weighted average of the element densities with the weights
+1 - Lⱼ / (1.2 L_max), where Lⱼ is the distance from the node to the centre of element j and
+L_max the largest of them. The weights fall linearly with the distance (they are not
+inverse-distance weights), the factor 1.2 keeps the farthest element at the weight 1/6.
 """
 function FilterForNodalDensity(
     i::Int,
