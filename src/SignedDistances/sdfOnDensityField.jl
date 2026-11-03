@@ -174,11 +174,6 @@ function evalDistances(
   dist = big * ones(ngp) # distance field initialization
   xp = zeros(nsd, ngp) # souřadnice bodů vrcholů (3xngp)
 
-  # Tri mesh for pseudonormals:
-  tri_mesh = Rho2sdf.extractSurfaceTriangularMesh(mesh)
-  EN = NodePosition3D(tri_mesh)
-  _, EPN = computePseudoNormals(tri_mesh)
-
   nthreads = Threads.nthreads()
 
   dist_local = [fill(big, ngp) for _ in 1:nthreads]
@@ -227,9 +222,6 @@ function evalDistances(
             # coordinates of the vertices of the triangle
             Xt = [x₁ x₂ x₃]
 
-            # finding coresponding triangle:
-            ID_tri = find_triangle_position(EN, [x₁ x₂ x₃])
-
             #NOTE: From this part it is same as in sdfOnTriangularMesh ->
 
             # Triangle edges
@@ -268,8 +260,6 @@ function evalDistances(
                     P = dot(x - xᵥ, Et[j] / L) # skalar product of vector (vertex&node) and norm edge
                     if (P >= 0 && P <= L) # is the perpendicular projection of a node onto an edge in the edge interval?
                       xₚ = xᵥ + (Et[j] / L) * P
-                      n_edge = n
-                      n_edge = EPN[ID_tri][j]
                       dist_tmp = norm(x - xₚ)
 
                       isFaceOrEdge = update_distance_parallel!(dist_local, dist_tmp, v, tid, xp_local, xₚ, isFaceOrEdge)
