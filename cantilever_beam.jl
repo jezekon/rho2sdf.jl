@@ -15,8 +15,7 @@ options = Rho2sdfOptions(
     sdf_grid_setup=:manual,         # automatic/manual grid setup
     export_nodal_densities=true,    # export nodal field to Paraview
     export_raw_sdf=true,            # export not smoothed SDF to Paraview
-    rbf_interp=false,               # interp/approx SDF values using RBFs
-    rbf_grid=:same                  # same/fine grid for RBFs interp/approx
+    rbf_smoothing=:approximation    # none/interpolation/approximation of SDF using RBFs
 )
 
 result = rho2sdf("beam", X, IEN, rho, options=options)

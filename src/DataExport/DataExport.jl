@@ -24,7 +24,7 @@ include("ExportToVTK.jl")
 # Exporting SDF grid data to VTI format (image data visualization)
 include("ExportToVTI.jl")
 
-# Exporting complete SDF results with metadata
+# Exporting the raw SDF on the grid for the mesher
 include("ExportSdfResults.jl")
 
 end

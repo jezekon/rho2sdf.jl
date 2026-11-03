@@ -20,8 +20,20 @@ rho2sdf(taskName, X, IEN, rho; options=Rho2sdfOptions())
 - `options::Rho2sdfOptions`: Configuration options (optional)
 
 ### Return Value:
-- `Tuple`: (fine_sdf, fine_grid, sdf_grid, sdf_dists)
-- `vti`: SDF visualization in Paraview
+- `Tuple`: (sdf_grid, sdf_dists, rbf)
+  - `sdf_grid`: grid on which the raw SDF is computed
+  - `sdf_dists`: raw SDF at the grid nodes (positive inside)
+  - `rbf`: RBF field (weights, kernel, volume shift and diagnostics), `nothing` for `rbf_smoothing=:none`
+
+### Output Files:
+Depending on `rbf_smoothing`, one of the following inputs for the mesher ([Implicit2TetMesh.jl](https://github.com/jezekon/Implicit2TetMesh.jl)) is written:
+
+| `rbf_smoothing` | File | Content | Mesher |
+|---|---|---|---|
+| `:none` | `Z_<taskName>_SDF_B-<h>.jld2`, `Z_<taskName>_Grid_B-<h>.jld2` | raw SDF on the grid (`fine_sdf`, `fine_grid`) | `generate_tetrahedral_mesh(grid_file, sdf_file, ...)` |
+| `:interpolation`, `:approximation` | `Z_<taskName>_RBF_B-<h>_<Interpolation\|Approximation>.jld2` | RBF field: weights, origin, `h`, `sigma`, `threshold`, `shift` | `load_rbf_source(file)`, then `generate_tetrahedral_mesh(source, ...; dx=source.h)` with `cut_points=:bisection` |
+
+The RBF field is never sampled back on a grid: the mesher evaluates the smooth field wherever it needs it. The file `<taskName>_B-<h>_RBF_<...>.vti` (the field sampled at h/2) is only for viewing in Paraview.
 
 ## Rho2sdfOptions
 
@@ -33,8 +45,7 @@ Rho2sdfOptions(;
     sdf_grid_setup=:manual,         # manual/automatic grid setup
     export_nodal_densities=true,    # export nodal field to Paraview
     export_raw_sdf=true,            # export non-smoothed SDF to Paraview
-    rbf_interp=false,               # interpolate/approximate SDF values using RBFs
-    rbf_grid=:normal                # normal/fine grid for RBFs interp/approx
+    rbf_smoothing=:interpolation    # none/interpolation/approximation of SDF using RBFs
 )
 ```
 
@@ -57,15 +68,12 @@ Rho2sdfOptions(;
 - Controls whether raw SDF values are exported to VTI format
 - Default: `false`
 
-#### rbf_interp::Bool
-- Determines whether RBF interpolation or approximation is used
-- Default: `true` (interpolation)
-
-#### rbf_grid::Symbol
-- Controls the resolution of the RBF grid
-- Valid values:
-  - `:normal` (default): Standard resolution (smooth=1)
-  - `:fine`: Higher resolution (smooth=2)
+#### rbf_smoothing::Symbol
+- Smoothing of the raw SDF with Gaussian RBFs (σ = grid step) centred at the grid nodes. Valid values:
+  - `:none`: No smoothing, the raw SDF on the grid is the output
+  - `:interpolation` (default): RBF interpolation, the field passes through the raw SDF at the grid nodes
+  - `:approximation`: RBF approximation (normalized Gaussian quasi-interpolation), smoother than the interpolation, does not pass through the nodal values
+- For both RBF variants, the field is shifted so that the volume enclosed by its zero level equals the volume of the SIMP result
 
 ## Example Usage
 
@@ -79,8 +87,7 @@ options = Rho2sdfOptions(
     sdf_grid_setup=:manual,
     export_nodal_densities=true,
     export_raw_sdf=true,
-    rbf_interp=true,
-    rbf_grid=:fine
+    rbf_smoothing=:approximation
 )
 result = rho2sdf("chapadlo", X, IEN, rho, options=options)
 ```

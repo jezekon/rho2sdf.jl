@@ -1,377 +1,325 @@
+# RBF smoothing of the raw SDF.
+#
+# The smoothed SDF is a sum of Gaussians centred at the grid nodes x_i:
+#     φ̃(x) = Σ_i w_i exp(-(|x - x_i| / h)²),   h = grid.cell_size,
+# where kernel values ≤ `threshold` are dropped (the kernel reaches √(-ln threshold)·h ≈ 2.6 h).
+# The body is {φ̃ ≥ shift}, positive inside as in the rest of rho2sdf.
+#
+# - Interpolation: the weights solve K w = φ, so φ̃ equals the raw SDF φ at the grid nodes.
+# - Approximation: w = φ / S, S the sum of the kernel over the grid. φ̃ is smoother but does not
+#   pass through φ; it keeps the scale of a distance.
+#
+# The field is not sampled back on a grid: its definition (weights, grid, kernel, shift) is
+# exported and the mesher (Implicit2TetMesh.jl) evaluates it wherever it needs.
+#
+# Positions in this file are in grid units: node (i, j, k) (0-based) lies at (i, j, k), so the
+# kernel is exp(-(Δi² + Δj² + Δk²)). It factorizes into exp(-Δi²)·exp(-Δj²)·exp(-Δk²).
 
 """
-    process_vector(vec::Vector{Float64})
+    kernel_range(position, reach, n)
 
-Convert a Vector{Float64} to Vector{Float32} while handling special values.
-This function preserves the sign of large values (which are usually placeholders)
-by replacing them with the maximum computed value in the dataset.
-
-# Arguments
-- `vec::Vector{Float64}`: Input vector with distance values
-
-# Returns
-- Vector{Float32}: Processed vector with special values handled
+Indices (0-based) of the grid nodes along one axis whose kernel can reach `position`
+(|index - position| ≤ `reach`), limited to the grid with `n` nodes.
 """
-function process_vector(vec::Vector{Float64})
-    vec_f32 = Float32.(vec)  # Convert input vector to Float32
-    max_val = maximum(abs, filter(x -> abs(x) < 1.0f9, vec_f32))
-    if isempty(max_val)
-        return vec_f32
-    end
-    return @. ifelse(abs(vec_f32) ≈ 1.0f10, sign(vec_f32) * max_val, vec_f32)
+function kernel_range(position::Float64, reach::Float64, n::Int)
+    return max(0, ceil(Int, position - reach)):min(n - 1, floor(Int, position + reach))
 end
 
 """
-    create_grid(NoC::Vector, grid)
+    kernel_offsets(threshold)
 
-Create a 3D grid based on the number of cells and grid boundaries.
-
-# Arguments
-- `NoC::Vector`: Number of cells in each dimension
-- `grid`: Grid structure with AABB_min and AABB_max properties
-
-# Returns
-- 3D array of grid points where each element is a 3D vector [x, y, z]
+Offsets (Δi, Δj, Δk) between two grid nodes for which the kernel exceeds `threshold`, and the
+kernel values. Ordered with Δk outermost and Δi innermost, i.e. by the linear node index.
 """
-function create_grid(NoC::Vector, grid)
-    nx, ny, nz = NoC .+ 1 # Number of grid points for x, y, z
-    xmin, ymin, zmin = Float32.(grid.AABB_min)
-    xmax, ymax, zmax = Float32.(grid.AABB_max)
-
-    x = range(Float32(xmin), Float32(xmax), length=nx)
-    y = range(Float32(ymin), Float32(ymax), length=ny)
-    z = range(Float32(zmin), Float32(zmax), length=nz)
-
-    return [[Float32(x), Float32(y), Float32(z)] for x in x, y in y, z in z]
-end
-
-"""
-    create_smooth_grid(grid, smooth::Int)
-
-Create a fine grid for smooth SDF representation with uniform cell size in all dimensions.
-
-# Arguments
-- `grid`: Original grid structure
-- `smooth::Int`: Factor by which to increase the grid resolution
-
-# Returns
-- Tuple(Float32, 3D Array): Cell size and 3D array of grid points
-"""
-function create_smooth_grid(grid, smooth::Int)
-    nx, ny, nz = (grid.N * smooth) .+ 1 # Number of grid points for x, y, z
-    xmin, ymin, zmin = Float32.(grid.AABB_min)
-    xmax, ymax, zmax = Float32.(grid.AABB_max)
-
-    # Compute step explicitly (uniform in all dimensions)
-    dx = (xmax - xmin) / (nx - 1)
-
-    # Generate grid points using explicit arithmetic
-    x = [xmin + (i - 1) * dx for i in 1:nx]
-    y = [ymin + (j - 1) * dx for j in 1:ny]
-    z = [zmin + (k - 1) * dx for k in 1:nz]
-
-    return (dx, [[x_i, y_j, z_k] for x_i in x, y_j in y, z_k in z])
-end
-
-"""
-    struct LimitedRangeRBFKernel{T<:Real} <: Kernel
-
-A custom kernel for RBF interpolation that limits the range of influence.
-This improves computational efficiency by creating sparse matrices.
-
-# Fields
-- `σ::T`: Width of the Gaussian function (controls smoothness)
-- `threshold::T`: Cutoff value below which kernel outputs are considered zero
-"""
-struct LimitedRangeRBFKernel{T<:Real} <: Kernel
-    σ::T
-    threshold::T
-end
-
-"""
-    (k::LimitedRangeRBFKernel)(x, y)
-
-Implement the kernel function as a callable object. Computes the Gaussian RBF
-between points x and y, returning 0 if below the threshold.
-
-# Arguments
-- `x::AbstractVector{Float32}`: First 3D point
-- `y::AbstractVector{Float32}`: Second 3D point
-
-# Returns
-- Float32: Kernel value (0 if below threshold)
-"""
-function (k::LimitedRangeRBFKernel)(x::AbstractVector{Float32}, y::AbstractVector{Float32})
-    r = sqrt((x[1] - y[1])^2 + (x[2] - y[2])^2 + (x[3] - y[3])^2)
-    value = exp(-(r / k.σ)^2)
-    return value > k.threshold ? value : 0.0
-end
-
-"""
-    vector_to_array(dist::Vector, N)
-
-Convert a flat vector to a 3D array based on grid dimensions.
-
-# Arguments
-- `dist::Vector`: Input vector of values
-- `N`: Grid dimensions (nx, ny, nz)
-
-# Returns
-- 3D array with the shape specified by N
-"""
-function vector_to_array(dist::Vector, N)
-    nx, ny, nz = N
-    result = Array{eltype(dist),3}(undef, nx, ny, nz)
-    @views result[:] .= dist
-    return result
-end
-
-"""
-    compute_sparse_kernel_matrix(grid, kernel::LimitedRangeRBFKernel)
-
-Compute a sparse kernel matrix for efficient RBF operations.
-Uses a KD-tree for spatial queries to find points within interaction radius.
-
-# Arguments
-- `grid`: Array of grid points
-- `kernel::LimitedRangeRBFKernel`: Kernel function with limited range
-
-# Returns
-- SparseMatrixCSC: Sparse kernel matrix
-"""
-function compute_sparse_kernel_matrix(grid, kernel::LimitedRangeRBFKernel)
-    # Convert grid to a matrix for KDTree
-    points = reduce(hcat, grid)
-    
-    # Calculate interaction radius based on kernel parameters
-    interaction_radius = kernel.σ * sqrt(-log(kernel.threshold))
-    
-    # Create KD-tree for efficient neighbor searches
-    kdtree = KDTree(points)
-    
-    I, J, V = Int[], Int[], Float32[]
-    
-    for i in 1:size(points, 2)
-        # Find all points within interaction_radius
-        idxs = inrange(kdtree, points[:, i], interaction_radius)
-        
-        for j in idxs
-            if j >= i  # Avoid duplicate calculations
-                value = Float32(kernel(grid[i], grid[j]))
-                if value > kernel.threshold
-                    push!(I, i)
-                    push!(J, j)
-                    push!(V, value)
-                    if i != j  # Account for symmetry
-                        push!(I, j)
-                        push!(J, i)
-                        push!(V, value)
-                    end
+function kernel_offsets(threshold::Float64)
+    max_offset = floor(Int, sqrt(-log(threshold)))
+    offsets = NTuple{3,Int}[]
+    kernel_values = Float64[]
+    for Δk = -max_offset:max_offset
+        for Δj = -max_offset:max_offset
+            for Δi = -max_offset:max_offset
+                kernel_value = exp(-(Δi^2 + Δj^2 + Δk^2))
+                if kernel_value > threshold
+                    push!(offsets, (Δi, Δj, Δk))
+                    push!(kernel_values, kernel_value)
                 end
             end
         end
     end
-    
-    return sparse(I, J, V, length(grid), length(grid))
+    return offsets, kernel_values
 end
 
 """
-    compute_rbf_weights(coarse_grid, coarse_values, kernel::LimitedRangeRBFKernel)
+    rbf_kernel_matrix(dims, threshold)
 
-Compute RBF weights for interpolation or approximation.
-
-# Arguments
-- `coarse_grid`: Array of grid points on coarse grid
-- `coarse_values`: Values at coarse grid points
-- `kernel::LimitedRangeRBFKernel`: Kernel function with limited range
-
-# Returns
-- Vector{Float32}: Computed weights for RBF interpolation
+Sparse kernel matrix K_ij = exp(-|x_i - x_j|²/h²) of the grid nodes, values ≤ `threshold`
+dropped. All nodes have the same neighbours (`kernel_offsets`), so each column is filled
+directly from the offsets.
 """
-function compute_rbf_weights(coarse_grid, coarse_values, kernel::LimitedRangeRBFKernel)
-    # Compute sparse kernel matrix for the coarse grid
-    K = compute_sparse_kernel_matrix(coarse_grid, kernel)
+function rbf_kernel_matrix(dims::NTuple{3,Int}, threshold::Float64)
+    nx, ny, nz = dims
+    n = nx * ny * nz
+    offsets, kernel_values = kernel_offsets(threshold)
 
-    # Convert coarse_values to Float32
-    coarse_values_f32 = Float32.(vec(coarse_values))
+    # Compressed sparse column format: the rows and values of column `col` are
+    # rowval[colptr[col]:colptr[col+1]-1] and nzval[colptr[col]:colptr[col+1]-1]
+    colptr = Vector{Int}(undef, n + 1)
+    rowval = Int[]
+    nzval = Float64[]
+    sizehint!(rowval, n * length(offsets))
+    sizehint!(nzval, n * length(offsets))
 
-    # Compute weights using conjugate gradient method
-    weights = cg(K, coarse_values_f32)
-
-    return weights
-end
-
-"""
-    rbf_interpolation_kdtree(fine_grid, coarse_grid, weights_f32, kernel)
-
-Perform RBF interpolation on a fine grid using precomputed weights.
-Uses KD-tree for efficient spatial queries.
-
-# Arguments
-- `fine_grid::Array`: Target grid points for interpolation
-- `coarse_grid::Array`: Source grid points with known weights
-- `weights_f32::Vector{Float32}`: Precomputed RBF weights
-- `kernel::LimitedRangeRBFKernel`: Kernel function with limited range
-
-# Returns
-- Vector{Float32}: Interpolated values at fine grid points
-"""
-function rbf_interpolation_kdtree(fine_grid::Array, coarse_grid::Array, weights_f32::Vector{Float32}, kernel::LimitedRangeRBFKernel)
-    kdtree = KDTree(reduce(hcat, coarse_grid))
-    max_distance = Float32(sqrt(-log(kernel.threshold) * kernel.σ^2))
-
-    result = zeros(Float32, length(fine_grid))
-    progress = Atomic{Int}(0)
-    total = length(fine_grid)
-
-    # Function to update and display progress bar
-    function update_progress()
-        new_progress = atomic_add!(progress, 1)
-        if new_progress % 100 == 0 || new_progress == total
-            percent = round(new_progress / total * 100, digits=1)
-            bar = "="^Int(floor(percent / 2))
-            @printf("\rProgress: [%-50s] %.1f%% (%d/%d)", bar, percent, new_progress, total)
-        end
-    end
-
-    Threads.@threads for i in eachindex(fine_grid)
-        idxs, dists = knn(kdtree, fine_grid[i], 124, true)
-        for (j, dist) in zip(idxs, dists)
-            if dist <= max_distance
-                result[i] += weights_f32[j] * exp(-(dist / kernel.σ)^2)
+    colptr[1] = 1
+    for k = 0:nz-1
+        for j = 0:ny-1
+            for i = 0:nx-1
+                col = 1 + i + nx * (j + ny * k)
+                # Neighbours inside the grid (the offsets are ordered, so the rows are sorted):
+                for (offset, kernel_value) in zip(offsets, kernel_values)
+                    ni, nj, nk = i + offset[1], j + offset[2], k + offset[3]
+                    if 0 <= ni < nx && 0 <= nj < ny && 0 <= nk < nz
+                        push!(rowval, 1 + ni + nx * (nj + ny * nk))
+                        push!(nzval, kernel_value)
+                    end
+                end
+                colptr[col+1] = length(rowval) + 1
             end
         end
-        update_progress()
     end
-    println()  # New line after completion
-    return result
+    return SparseMatrixCSC(n, n, colptr, rowval, nzval)
 end
 
 """
-    LS_Threshold(sdf::Array, grid::Array, mesh::Mesh, Exp::Int)
+    rbf_value(weights, threshold, position)
 
-Adjust the level-set function to maintain the volume of the original mesh.
-Uses binary search to find the threshold that gives the desired volume.
-
-# Arguments
-- `sdf::Array`: Signed distance function values
-- `grid::Array`: Grid points
-- `mesh::Mesh`: Original mesh with known volume
-- `Exp::Int`: Precision exponent for convergence criterion
-
-# Returns
-- Float32: Threshold value for the level set function
+RBF sum Σ w_i exp(-|x - x_i|²/h²) at `position` (grid units, see the top of the file).
 """
-function LS_Threshold(sdf::Array, grid::Array, mesh::Mesh, Exp::Int)
-    # Calculate target volume from mesh properties
-    target_volume = mesh.V_frac * mesh.V_domain
-    
-    # Initialize threshold search variables
-    eps = 1.0
-    th_low, th_high = minimum(sdf), maximum(sdf)
-    n = 0
-    th = 0.0
-    
-    # Setup arrays for volume calculation
-    dim = size(sdf)
-    shifted_sdf = Array{Float32,3}(undef, dim)
-    
-    # Binary search to find the threshold that gives the desired volume
-    while n < 40 && eps > 10.0^(-Exp)
-        th = (th_low + th_high) / 2
-        
-        # Convert the level set to SDF format for volume calculation
-        shifted_sdf .= sdf .- th
-        
-        # Calculate current volume using the SDF function
-        current_volume = calculate_volume_from_sdf(shifted_sdf, grid)
-        
-        # Adjust threshold based on calculated volume
-        eps = abs(target_volume - current_volume)
-        if current_volume > target_volume
-            th_low = th
-        else
-            th_high = th
+function rbf_value(weights::Array{Float64,3}, threshold::Float64, position::NTuple{3,Float64})
+    nx, ny, nz = size(weights)
+    x, y, z = position
+    reach = sqrt(-log(threshold))   # kernel reach in cell sizes
+
+    i_range = kernel_range(x, reach, nx)
+    j_range = kernel_range(y, reach, ny)
+    k_range = kernel_range(z, reach, nz)
+
+    value = 0.0
+    @inbounds for k in k_range
+        gz = exp(-(k - z)^2)
+        for j in j_range
+            gyz = gz * exp(-(j - y)^2)
+            gyz > threshold || continue     # all i would be below the threshold
+            for i in i_range
+                g = gyz * exp(-(i - x)^2)
+                if g > threshold
+                    value += weights[i+1, j+1, k+1] * g
+                end
+            end
         end
-        n += 1
     end
-    
-    return -th
+    return value
 end
 
 """
-    RBFs_smoothing(mesh::Mesh, dist::Vector, my_grid::Grid, Is_interpolation::Bool, 
-                   smooth::Int, taskName::String, threshold::Float64=1e-3)
+    rbf_sample(weights, threshold, refine)
 
-Main function to perform RBF smoothing of a signed distance function.
-Supports both interpolation and approximation approaches.
+RBF sum (`rbf_value`) at the nodes of the grid refined `refine` times (spacing h/refine).
+Returns an array of size `refine .* (size(weights) .- 1) .+ 1`. Faster than calling `rbf_value`
+at every node, because the 1D kernel values exp(-Δ²) are shared along the grid lines.
+"""
+function rbf_sample(weights::Array{Float64,3}, threshold::Float64, refine::Int)
+    nx, ny, nz = size(weights)
+    mx, my, mz = refine * (nx - 1) + 1, refine * (ny - 1) + 1, refine * (nz - 1) + 1
+    reach = sqrt(-log(threshold))   # kernel reach in cell sizes
+    values = zeros(mx, my, mz)
+
+    @threads :static for sk = 1:mz
+        # 1D kernel values along x, y, z (only the entries in the kernel range are used)
+        gx = zeros(nx)
+        gy = zeros(ny)
+        gz = zeros(nz)
+
+        z = (sk - 1) / refine
+        k_range = kernel_range(z, reach, nz)
+        for k in k_range
+            gz[k+1] = exp(-(k - z)^2)
+        end
+        for sj = 1:my
+            y = (sj - 1) / refine
+            j_range = kernel_range(y, reach, ny)
+            for j in j_range
+                gy[j+1] = exp(-(j - y)^2)
+            end
+            for si = 1:mx
+                x = (si - 1) / refine
+                i_range = kernel_range(x, reach, nx)
+                for i in i_range
+                    gx[i+1] = exp(-(i - x)^2)
+                end
+
+                value = 0.0
+                @inbounds for k in k_range
+                    for j in j_range
+                        gyz = gy[j+1] * gz[k+1]
+                        gyz > threshold || continue
+                        for i in i_range
+                            g = gx[i+1] * gyz
+                            if g > threshold
+                                value += weights[i+1, j+1, k+1] * g
+                            end
+                        end
+                    end
+                end
+                values[si, sj, sk] = value
+            end
+        end
+    end
+    return values
+end
+
+"""
+    RBFs_smoothing(mesh::Mesh, dist::Vector, grid::Grid, is_interpolation::Bool;
+                   threshold = 1e-3, volume_refine = 8, cg_reltol = 1e-12)
+
+Smooth the raw SDF by Gaussian RBFs (see the top of the file) and find the shift that keeps the
+volume of the SIMP result.
+
+1. Placeholders of the far nodes are replaced (`fill_far_distances`).
+2. Weights: interpolation solves K w = φ by CG (relative tolerance `cg_reltol`), approximation
+   takes w = φ / S.
+3. The shift is found by bisection so that the volume of {φ̃ ≥ shift} (`RBFBandVolume`) equals
+   mesh.V_frac·mesh.V_domain.
 
 # Arguments
 - `mesh::Mesh`: Original mesh with known volume
-- `dist::Vector`: Original distance values on coarse grid
-- `my_grid::Grid`: Grid structure
-- `Is_interpolation::Bool`: Whether to use interpolation (true) or approximation (false)
-- `smooth::Int`: Factor by which to increase the grid resolution
-- `taskName::String`: Name for output files
-- `threshold::Float64=1e-3`: Threshold for the RBF kernel
+- `dist::Vector`: Raw SDF at the grid nodes (positive inside, placeholders ±1e10)
+- `grid::Grid`: Grid structure
+- `is_interpolation::Bool`: Interpolation (true) or approximation (false)
 
 # Returns
-- Tuple(Array, Array): Fine SDF values and fine grid points
+- NamedTuple: the RBF field (weights, origin, h, sigma, threshold, shift, interpolation) and
+  checks (target and achieved volume, deviation from the raw SDF near the surface)
 """
 function RBFs_smoothing(
     mesh::Mesh,
     dist::Vector,
-    my_grid::Grid,
-    Is_interpolation::Bool,
-    smooth::Int,
-    taskName::String,
-    threshold::Float64=1e-3
+    grid::Grid,
+    is_interpolation::Bool;
+    threshold::Float64 = 1e-3,
+    volume_refine::Int = 8,
+    cg_reltol::Float64 = 1e-12,
 )
-    name = Is_interpolation ? "Interpolation" : "Approximation"
+    name = is_interpolation ? "Interpolation" : "Approximation"
+    dims = Tuple(grid.N .+ 1)
+    h = grid.cell_size
 
-    # Process the SDF values
-    dist_modif = process_vector(dist)
+    # 1. Raw SDF without placeholders:
+    sdf = fill_far_distances(Float64.(dist))
 
-    # Create coarse grid and assign values
-    coarse_grid = create_grid(my_grid.N, my_grid)
-    raw_SDF = vector_to_array(dist_modif, my_grid.N .+ 1)
+    # 2. RBF weights:
+    println("Computing RBF weights ($name)...")
+    if is_interpolation
+        K = rbf_kernel_matrix(dims, threshold)
+        w = cg(K, sdf; reltol = cg_reltol, maxiter = 10_000)
+    else
+        _, kernel_values = kernel_offsets(threshold)
+        w = sdf ./ sum(kernel_values)
+    end
+    weights = reshape(w, dims)
 
-    # Create fine grid
-    dim = (my_grid.N * smooth) .+ 1
-    (step, fine_grid) = create_smooth_grid(my_grid, smooth)
-    println("Original grid size: ", my_grid.N)
-    println("Fine grid size: ", dim)
+    # Check: deviation of φ̃ from the raw SDF at the nodes near the surface
+    rbf_at_nodes = vec(rbf_sample(weights, threshold, 1))
+    near_surface = abs.(sdf) .<= 2.5 * h
+    nodal_error = maximum(abs.(rbf_at_nodes[near_surface] .- sdf[near_surface]))
 
-    # Define Gaussian kernel with limited range
-    σ = my_grid.cell_size
-    kernel = LimitedRangeRBFKernel(σ, threshold)
+    # 3. Shift that keeps the volume, found by bisection:
+    println("Computing the shift of the RBF field to meet the volume condition...")
+    target_volume = mesh.V_frac * mesh.V_domain
+    volume_of = RBFBandVolume(weights, threshold, h, reshape(sdf, dims); refine = volume_refine)
 
-    # Compute weights on the coarse grid
-    println("Computing weights on the coarse grid...")
-    weights = Is_interpolation ?
-              (@time compute_rbf_weights(coarse_grid, raw_SDF, kernel)) :
-              vec(raw_SDF)
+    # The volume decreases as the shift grows
+    shift_low, shift_high = -h, h
+    if !(volume_of(shift_low).volume >= target_volume >= volume_of(shift_high).volume)
+        error("RBFs_smoothing: target volume $target_volume outside the bracket of the shift")
+    end
 
-    # Compute level set function threshold for volume preservation
-    println("Computing the LSF zero level to meet the volume condition...")
-    @time LSF = rbf_interpolation_kdtree(coarse_grid, coarse_grid, weights, kernel)
-    LSF_array = vector_to_array(LSF, my_grid.N .+ 1)
-    th = LS_Threshold(LSF_array, coarse_grid, mesh, 4)
+    shift = 0.0
+    achieved = (volume = 0.0, volume_fine = 0.0, volume_coarse = 0.0)
+    for _ = 1:60
+        shift = (shift_low + shift_high) / 2
+        achieved = volume_of(shift)
+        if abs(achieved.volume - target_volume) <= 1e-9 * target_volume
+            break
+        end
+        if achieved.volume > target_volume
+            shift_low = shift
+        else
+            shift_high = shift
+        end
+    end
 
-    # Perform RBF interpolation on the fine grid
-    println("Computing $name on the fine grid...")
-    @time fine_LSF = rbf_interpolation_kdtree(fine_grid, coarse_grid, weights, kernel)
+    # The volume is piecewise constant in the shift, so 1e-9 is not always reached
+    relative_error = abs(achieved.volume - target_volume) / target_volume
+    if relative_error > 1e-6
+        @warn @sprintf("RBF volume shift: volume %.6f deviates from the target %.6f by %.1e (relative)",
+            achieved.volume, target_volume, relative_error)
+    end
 
-    # Adjust level set function to preserve volume
-    fine_LSF_offset = fine_LSF .+ th
+    @printf("RBF %s: %d nodes, h = %.4f\n", lowercase(name), prod(dims), h)
+    @printf("  max deviation from the raw SDF near the surface: %.2e\n", nodal_error)
+    @printf("  shift = %.6f, volume %.4f (target %.4f; sub-grid h/%d: %.4f, h/%d: %.4f)\n",
+        shift, achieved.volume, target_volume,
+        volume_refine, achieved.volume_fine, volume_refine ÷ 2, achieved.volume_coarse)
 
-    # Convert to 3D array for output
-    fine_LSF_offset_array = vector_to_array(fine_LSF_offset, dim)
-    fine_sdf = fine_LSF_offset_array
+    return (
+        weights = weights,
+        origin = Float64.(grid.AABB_min),
+        h = h,
+        sigma = h,
+        threshold = threshold,
+        shift = shift,
+        interpolation = is_interpolation,
+        target_volume = target_volume,
+        volume = achieved.volume,
+        volume_sampled = (achieved.volume_fine, achieved.volume_coarse),
+        volume_refine = volume_refine,
+        nodal_error = nodal_error,
+    )
+end
 
-    # Report final volume
-    current_volume = calculate_volume_from_sdf(fine_sdf, fine_grid)
-    @info "Body volume at SDF zero level: $current_volume (target: $(round(mesh.V_frac * mesh.V_domain, digits=4)))"
+"""
+    export_rbf_results(rbf, grid, taskName)
 
-    return fine_sdf, fine_grid
+Save the RBF field of `RBFs_smoothing` for the mesher (`load_rbf_source` of Implicit2TetMesh.jl)
+to `Z_<taskName>_RBF_B-<h>_<Interpolation|Approximation>.jld2`, and φ̃ - shift sampled at h/2 to
+a VTI for viewing in ParaView.
+
+# Returns
+- String: Name of the JLD2 file
+"""
+function export_rbf_results(rbf, grid::Grid, taskName::String)
+    name = rbf.interpolation ? "Interpolation" : "Approximation"
+    B = round(rbf.h, digits = 4)
+
+    # The variable names are those the mesher reads
+    file = "Z_$(taskName)_RBF_B-$(B)_$(name).jld2"
+    jldsave(file;
+        weights = rbf.weights,
+        origin = rbf.origin,
+        h = rbf.h,
+        sigma = rbf.sigma,
+        threshold = rbf.threshold,
+        shift = rbf.shift,
+        inside = "positive",
+        smoothing = lowercase(name),
+        target_volume = rbf.target_volume,
+        volume = rbf.volume,
+    )
+
+    # Picture of the field for ParaView (not used by the mesher)
+    field = rbf_sample(rbf.weights, rbf.threshold, 2) .- rbf.shift
+    exportSdfToVTI("$(taskName)_B-$(B)_RBF_$(name).vti", grid, vec(field), "distance", 2)
+
+    println("Saved RBF definition to $file")
+    return file
 end

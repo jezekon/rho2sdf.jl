@@ -8,25 +8,26 @@ Configuration options for density to SDF conversion.
 - `sdf_grid_setup::Symbol`: Grid setup method: `:manual` or `:automatic`.
 - `export_nodal_densities::Bool`: Whether to export nodal densities to VTU.
 - `export_raw_sdf::Bool`: Whether to export raw SDF to VTI.
-- `rbf_interp::Bool`: Use RBF interpolation (true) or approximation (false).
-- `rbf_grid::Symbol`: RBF grid resolution: `:same` (smooth=1) or `:fine` (smooth=2).
+- `rbf_smoothing::Symbol`: Smoothing of the raw SDF:
+    * `:none`: no smoothing, the raw SDF on the grid goes to the mesher (`export_sdf_results`).
+    * `:interpolation`: Gaussian RBF interpolation of the raw SDF (`RBFs_smoothing`).
+    * `:approximation`: Gaussian RBF approximation of the raw SDF (`RBFs_smoothing`).
+  With RBFs, the field itself (weights, shift) goes to the mesher (`export_rbf_results`).
 """
 struct Rho2sdfOptions
     threshold_density::Union{Float64, Nothing}
     sdf_grid_setup::Symbol
     export_nodal_densities::Bool
     export_raw_sdf::Bool
-    rbf_interp::Bool
-    rbf_grid::Symbol
-    
+    rbf_smoothing::Symbol
+
     # Constructor with default values
     function Rho2sdfOptions(;
         threshold_density=nothing,
         sdf_grid_setup=:manual,
         export_nodal_densities=false,
         export_raw_sdf=false,
-        rbf_interp=true,
-        rbf_grid=:same
+        rbf_smoothing=:interpolation
     )
         # Validate threshold density if provided
         if threshold_density !== nothing
@@ -44,13 +45,13 @@ struct Rho2sdfOptions
             sdf_grid_setup = :manual
         end
         
-        # Validate rbf_grid and set default if invalid
-        if !(rbf_grid in [:same, :fine])
-            @warn "Invalid rbf_grid: $rbf_grid. Must be either :same or :fine. Using default :same instead."
-            rbf_grid = :same
+        # Validate rbf_smoothing and set default if invalid
+        if !(rbf_smoothing in [:none, :interpolation, :approximation])
+            @warn "Invalid rbf_smoothing: $rbf_smoothing. Must be :none, :interpolation or :approximation. Using default :interpolation instead."
+            rbf_smoothing = :interpolation
         end
-        
-        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_interp, rbf_grid)
+
+        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing)
     end
 end
 
@@ -67,7 +68,8 @@ Convert element densities to Signed Distance Function representation.
 - `options::Rho2sdfOptions`: Configuration options (optional)
 
 # Returns
-- `Tuple`: (fine_sdf, fine_grid, sdf_grid, sdf_dists)
+- `Tuple`: (sdf_grid, sdf_dists, rbf). `sdf_dists` is the raw SDF at the grid nodes, `rbf` the
+  RBF field of `RBFs_smoothing` (`nothing` for `rbf_smoothing = :none`).
 
 # Example
 ```julia
@@ -78,7 +80,8 @@ result = rho2sdf("chapadlo", X, IEN, rho)
 options = Rho2sdfOptions(
     threshold_density=0.5,
     sdf_grid_setup=:automatic,
-    export_nodal_densities=true
+    export_nodal_densities=true,
+    rbf_smoothing=:approximation
 )
 result = rho2sdf("chapadlo", X, IEN, rho, options=options)
 """
@@ -127,15 +130,18 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
         exportSdfToVTI(taskName * "_SDF_CellSize-" * string(B) * ".vti", sdf_grid, sdf_dists, "distance")
     end
     
-    # RBF smoothing with selected parameters
-    smooth = options.rbf_grid == :same ? 1 : 2  # Same=1, Fine=2
-    (fine_sdf, fine_grid) = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_interp, smooth, taskName)
-    
-    # Export final smoothed results
-    export_sdf_results(fine_sdf, fine_grid, sdf_grid, taskName, smooth, options.rbf_interp)
-    
+    # Raw SDF only: exported on the grid for the mesher
+    if options.rbf_smoothing == :none
+        export_sdf_results(fill_far_distances(sdf_dists), sdf_grid, taskName)
+        return (sdf_grid, sdf_dists, nothing)
+    end
+
+    # RBF smoothing: the RBF field itself is exported and evaluated in the mesher
+    rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_smoothing == :interpolation)
+    export_rbf_results(rbf, sdf_grid, taskName)
+
     # Return all relevant results
-    return (fine_sdf, fine_grid, sdf_grid, sdf_dists)
+    return (sdf_grid, sdf_dists, rbf)
 
 end
 

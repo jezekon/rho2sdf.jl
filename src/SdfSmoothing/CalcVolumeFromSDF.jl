@@ -1,197 +1,160 @@
 """
-    calculate_volume_from_sdf(
-        fine_sdf::Array{Float32,3}, 
-        fine_grid::Array{Vector{Float32},3}; 
-        iso_threshold::Float32=0.0f0, 
-        detailed_quad_order::Int=9
-    ) -> Float32
+    RBFBandVolume(weights, threshold, h, raw_sdf; refine = 8, band_width = 2.5)
 
-Calculates volume of geometry defined by SDF iso-surface.
+Volume of the body {φ̃ ≥ shift} of the RBF field φ̃ (`RBFs_smoothing`) for a given shift.
+Usage: `volume_of = RBFBandVolume(...)`, then `volume_of(shift)`.
+
+Evaluating φ̃ is expensive, so it is done once here and every `volume_of(shift)` only compares
+the stored values with the shift:
+1. The grid cells are sorted by the raw SDF at their corners. Cells deeper than `band_width`·h
+   inside count fully, cells deeper than `band_width`·h outside are skipped (the smoothing and
+   the shift move the surface by less than h). The remaining cells form the band around the surface.
+2. In each band cell, φ̃ is sampled on a sub-grid with spacing h/`refine`.
+3. `volume_of(shift)` adds up the inside parts of the sub-cells (`band_volume`).
 
 # Arguments
-- `fine_sdf`: SDF values at regular grid nodes
-- `fine_grid`: Coordinates of grid nodes, each element is [x,y,z]
-- `iso_threshold`: Iso-surface value (default = 0.0)
-- `detailed_quad_order`: Gauss-Legendre quadrature order
-
-# Returns
-- Volume of the geometry
-
-# Description
-For each grid element:
-1. Skip if outside iso-surface (all SDF values < threshold)
-2. Add full volume if inside iso-surface (all SDF values ≥ threshold)
-3. Use quadrature for partial elements intersecting the iso-surface
+- `weights::Array{Float64,3}`: RBF weights at the grid nodes
+- `threshold::Float64`: Kernel cut-off (`RBFs_smoothing`)
+- `h::Float64`: Grid cell size
+- `raw_sdf::Array{Float64,3}`: Raw SDF at the grid nodes, without placeholders
+- `refine::Int`: Number of sub-cells along a cell edge (even)
+- `band_width::Float64`: Half-width of the band in cell sizes
 """
-function calculate_volume_from_sdf(
-    fine_sdf::Array{Float32,3},
-    fine_grid::Array{Vector{Float32},3};
-    iso_threshold::Float32 = 0.0f0,
-    detailed_quad_order::Int = 9
+struct RBFBandVolume
+    h::Float64                              # grid cell size
+    refine::Int                             # sub-cells along a cell edge
+    n_inside_cells::Int                     # cells fully inside the body
+    band_samples::Vector{Array{Float64,3}}  # φ̃ on the sub-grid of each band cell
+end
+
+function RBFBandVolume(
+    weights::Array{Float64,3},
+    threshold::Float64,
+    h::Float64,
+    raw_sdf::Array{Float64,3};
+    refine::Int = 8,
+    band_width::Float64 = 2.5,
 )
-    # Determine grid dimensions
-    nx, ny, nz = size(fine_sdf)
-    @assert size(fine_grid) == (nx, ny, nz) "Dimensions of fine_sdf and fine_grid must match"
-    
-    # Calculate element size (assuming all elements are cubes with the same edge length)
-    edge_vector = fine_grid[2, 1, 1] .- fine_grid[1, 1, 1]
-    element_edge_length = norm(edge_vector)
-    element_volume = element_edge_length^3
-    
-    # Set up Gauss-Legendre quadrature
-    gp_double, w_double = FastGaussQuadrature.gausslegendre(detailed_quad_order)
-    gp = Float32.(gp_double)
-    w = Float32.(w_double)
-    
-    # Initialize total volume using atomic variable for parallel processing
-    total_volume = Atomic{Float32}(0.0f0)
-    
-    # Precompute Jacobian for cubic element
-    # For mapping from [-1,1]^3 to a cube with edge a, the Jacobian determinant is (a/2)^3 = a^3/8
-    jacobian_det = element_volume / 8.0f0
-    
-    # Parallel iteration over all elements
-    @threads for k in 1:nz-1
-        for j in 1:ny-1
-            for i in 1:nx-1
-                # Get SDF values at element nodes
-                c000 = fine_sdf[i, j, k]
-                c100 = fine_sdf[i+1, j, k]
-                c010 = fine_sdf[i, j+1, k]
-                c110 = fine_sdf[i+1, j+1, k]
-                c001 = fine_sdf[i, j, k+1]
-                c101 = fine_sdf[i+1, j, k+1]
-                c011 = fine_sdf[i, j+1, k+1]
-                c111 = fine_sdf[i+1, j+1, k+1]
-                
-                # Check if element can contain the iso-surface
-                min_value = min(c000, c100, c010, c110, c001, c101, c011, c111)
-                max_value = max(c000, c100, c010, c110, c001, c101, c011, c111)
-                
-                # Skip element if completely outside the iso-surface
-                if max_value < iso_threshold
-                    continue
+    # The coarse sub-grid of the Richardson extrapolation takes every second sample:
+    iseven(refine) || error("RBFBandVolume: refine must be even")
+
+    # 1. Sort the grid cells by the raw SDF at their 8 corners:
+    nx, ny, nz = size(raw_sdf)
+    n_inside_cells = 0
+    band_cells = NTuple{3,Int}[]
+    for k = 1:nz-1
+        for j = 1:ny-1
+            for i = 1:nx-1
+                corner_min, corner_max = extrema(@view raw_sdf[i:i+1, j:j+1, k:k+1])
+                if corner_min > band_width * h
+                    n_inside_cells += 1             # deep inside
+                elseif corner_max >= -band_width * h
+                    push!(band_cells, (i, j, k))    # near the surface
+                end                                 # else deep outside
+            end
+        end
+    end
+
+    # 2. φ̃ on the sub-grid of each band cell (positions in grid units, first node at 0):
+    band_samples = Vector{Array{Float64,3}}(undef, length(band_cells))
+    @threads :static for b in eachindex(band_cells)
+        i, j, k = band_cells[b]
+        samples = Array{Float64,3}(undef, refine + 1, refine + 1, refine + 1)
+        for sk = 0:refine
+            for sj = 0:refine
+                for si = 0:refine
+                    position = (i - 1 + si / refine, j - 1 + sj / refine, k - 1 + sk / refine)
+                    samples[si+1, sj+1, sk+1] = rbf_value(weights, threshold, position)
                 end
-                
-                # If element is completely inside the iso-surface, add its full volume
-                if min_value >= iso_threshold
-                    atomic_add!(total_volume, element_volume)
-                    continue
-                end
-                
-                # Element intersects the iso-surface, perform numerical integration
-                element_volume_partial = 0.0f0
-                
-                # Perform numerical integration over all quadrature points
-                for kq in 1:detailed_quad_order
-                    zeta_m = gp[kq]  # Gauss point in [-1,1]
-                    zeta = (zeta_m + 1) / 2  # Convert to [0,1] for interpolation
-                    
-                    for jq in 1:detailed_quad_order
-                        eta_m = gp[jq]
-                        eta = (eta_m + 1) / 2
-                        
-                        for iq in 1:detailed_quad_order
-                            xi_m = gp[iq]
-                            xi = (xi_m + 1) / 2
-                            
-                            # Trilinear interpolation of SDF value at Gauss point
-                            c00 = c000 * (1.0f0 - xi) + c100 * xi
-                            c01 = c001 * (1.0f0 - xi) + c101 * xi
-                            c10 = c010 * (1.0f0 - xi) + c110 * xi
-                            c11 = c011 * (1.0f0 - xi) + c111 * xi
-                            
-                            c0 = c00 * (1.0f0 - eta) + c10 * eta
-                            c1 = c01 * (1.0f0 - eta) + c11 * eta
-                            
-                            point_sdf = c0 * (1.0f0 - zeta) + c1 * zeta
-                            
-                            # Add contribution only if point is inside (or on) the iso-surface
-                            if point_sdf >= iso_threshold
-                                weight = w[iq] * w[jq] * w[kq]
-                                element_volume_partial += weight * jacobian_det
+            end
+        end
+        band_samples[b] = samples
+    end
+
+    return RBFBandVolume(h, refine, n_inside_cells, band_samples)
+end
+
+"""
+    band_volume(V::RBFBandVolume, shift, step)
+
+Volume of {φ̃ ≥ shift}: the cells inside plus the inside parts of the band cells. The band cells
+are split into sub-cells whose corners are every `step`-th sample (spacing `step`·h/refine).
+A sub-cell with all corners ≥ shift counts fully. If the surface passes through it, the inside
+part is integrated by 3×3×3 Gauss quadrature of the trilinear interpolation of the corners.
+"""
+function band_volume(V::RBFBandVolume, shift::Float64, step::Int)
+    # Gauss points and weights on [0, 1]:
+    gp, gw = FastGaussQuadrature.gausslegendre(3)
+    ξ = (gp .+ 1) ./ 2
+    w = gw ./ 2
+
+    n_sub = V.refine ÷ step         # sub-cells along a cell edge
+    sub_volume = (V.h / n_sub)^3
+
+    cell_volumes = zeros(length(V.band_samples))
+    @threads :static for b in eachindex(V.band_samples)
+        samples = V.band_samples[b]
+        volume = 0.0
+        for sk = 0:n_sub-1
+            for sj = 0:n_sub-1
+                for si = 0:n_sub-1
+                    # Corner values of the sub-cell, cxyz = corner at x, y, z ∈ {0, 1}:
+                    i, j, k = 1 + si * step, 1 + sj * step, 1 + sk * step
+                    c000 = samples[i, j, k]
+                    c100 = samples[i+step, j, k]
+                    c010 = samples[i, j+step, k]
+                    c110 = samples[i+step, j+step, k]
+                    c001 = samples[i, j, k+step]
+                    c101 = samples[i+step, j, k+step]
+                    c011 = samples[i, j+step, k+step]
+                    c111 = samples[i+step, j+step, k+step]
+
+                    corner_min = min(c000, c100, c010, c110, c001, c101, c011, c111)
+                    corner_max = max(c000, c100, c010, c110, c001, c101, c011, c111)
+
+                    if corner_min >= shift
+                        # Sub-cell fully inside
+                        volume += sub_volume
+                    elseif corner_max >= shift
+                        # Surface passes through the sub-cell: inside fraction by Gauss quadrature
+                        fraction = 0.0
+                        for kq = 1:3, jq = 1:3, iq = 1:3
+                            x, y, z = ξ[iq], ξ[jq], ξ[kq]
+
+                            # Trilinear interpolation of the corner values:
+                            c00 = c000 * (1 - x) + c100 * x
+                            c10 = c010 * (1 - x) + c110 * x
+                            c01 = c001 * (1 - x) + c101 * x
+                            c11 = c011 * (1 - x) + c111 * x
+                            c0 = c00 * (1 - y) + c10 * y
+                            c1 = c01 * (1 - y) + c11 * y
+                            value = c0 * (1 - z) + c1 * z
+
+                            if value >= shift
+                                fraction += w[iq] * w[jq] * w[kq]
                             end
                         end
+                        volume += fraction * sub_volume
                     end
                 end
-                
-                # Add to total volume
-                atomic_add!(total_volume, element_volume_partial)
             end
         end
+        cell_volumes[b] = volume
     end
-    
-    return total_volume[]
+
+    return V.n_inside_cells * V.h^3 + sum(cell_volumes)
 end
 
-# calculate_volume_from_sdf(fine_sdf, fine_grid)
+"""
+    (V::RBFBandVolume)(shift) -> (volume, volume_fine, volume_coarse)
 
-function calculate_volume_simple(
-    fine_sdf::Array{Float32,3},
-    fine_grid::Array{Vector{Float32},3};
-    iso_threshold::Float32 = 0.0f0
-)
-    # Determine grid dimensions
-    nx, ny, nz = size(fine_sdf)
-    @assert size(fine_grid) == (nx, ny, nz) "Dimensions of fine_sdf and fine_grid must match"
-    
-    # Calculate element size
-    edge_vector = fine_grid[2, 1, 1] .- fine_grid[1, 1, 1]
-    element_edge_length = norm(edge_vector)
-    element_volume = Float32(element_edge_length^3)
-    
-    # Initialize total volume
-    total_volume = 0.0f0
-    
-    # Counters for statistics
-    full_elements = 0
-    partial_elements = 0
-    empty_elements = 0
-    
-    # Iterate over all elements
-    for k in 1:nz-1
-        for j in 1:ny-1
-            for i in 1:nx-1
-                # Get SDF values at element nodes
-                values = [
-                    fine_sdf[i, j, k],      # c000
-                    fine_sdf[i+1, j, k],    # c100
-                    fine_sdf[i, j+1, k],    # c010
-                    fine_sdf[i+1, j+1, k],  # c110
-                    fine_sdf[i, j, k+1],    # c001
-                    fine_sdf[i+1, j, k+1],  # c101
-                    fine_sdf[i, j+1, k+1],  # c011
-                    fine_sdf[i+1, j+1, k+1] # c111
-                ]
-                
-                # Count nodes inside material (SDF >= iso_threshold)
-                nodes_inside = count(v -> v >= iso_threshold, values)
-                
-                if nodes_inside == 8
-                    # All nodes inside material - add full volume
-                    total_volume += element_volume
-                    full_elements += 1
-                elseif nodes_inside > 0
-                    # Some nodes inside - add proportional volume
-                    total_volume += (nodes_inside / 8.0f0) * element_volume
-                    partial_elements += 1
-                else
-                    # No nodes inside
-                    empty_elements += 1
-                end
-            end
-        end
-    end
-    
-    # Print statistics
-    println("Volume calculation statistics:")
-    println("  Fully inside elements: $full_elements")
-    println("  Partially inside elements: $partial_elements")
-    println("  Completely outside elements: $empty_elements")
-    println("  Total elements: $(full_elements + partial_elements + empty_elements)")
-    println("  Calculated volume: $total_volume")
-    
-    return total_volume
+Volume of {φ̃ ≥ shift}. `volume_fine` and `volume_coarse` are computed on the sub-grids h/refine
+and 2h/refine. Their error falls with the square of the spacing, so the Richardson extrapolation
+(4·fine - coarse)/3 removes its main part.
+"""
+function (V::RBFBandVolume)(shift::Float64)
+    volume_fine = band_volume(V, shift, 1)
+    volume_coarse = band_volume(V, shift, 2)
+    volume = (4 * volume_fine - volume_coarse) / 3
+    return (volume = volume, volume_fine = volume_fine, volume_coarse = volume_coarse)
 end
-
-# volume = calculate_volume_simple(fine_sdf, fine_grid)

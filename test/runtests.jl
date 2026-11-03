@@ -122,9 +122,8 @@ using BenchmarkTools
 
       # RBF smoothing:
       is_interp = true
-      smooth = 1
-      (fine_sdf, fine_grid) = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp, smooth, taskName) # interpolation == true, aproximation == false, smooth
-      export_sdf_results(fine_sdf, fine_grid, sdf_grid, taskName, smooth, is_interp)
+      rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp) # interpolation == true, aproximation == false
+      export_rbf_results(rbf, sdf_grid, taskName)
      
       # fig = visualize_stable_isosurface(fine_LSF)
       # display(fig)
@@ -179,9 +178,8 @@ using BenchmarkTools
 
       # RBF smoothing:
       is_interp = true
-      smooth = 1
-      (fine_sdf, fine_grid) = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp, smooth, taskName) # interpolation == true, aproximation == false, smooth
-      export_sdf_results(fine_sdf, fine_grid, sdf_grid, taskName, smooth, is_interp)
+      rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp) # interpolation == true, aproximation == false
+      export_rbf_results(rbf, sdf_grid, taskName)
      
       # @save "Z_$(taskName)_xp.jld2" xp
       # @save "Z_$(taskName)_Mesh.jld2" mesh
@@ -209,8 +207,7 @@ using BenchmarkTools
           sdf_grid_setup=:automatic,
           export_nodal_densities=false,
           export_raw_sdf=false,
-          rbf_interp=true,
-          rbf_grid=:same
+          rbf_smoothing=:interpolation
       )
 
       result = rho2sdf("beam", X, IEN, rho, options=options)
@@ -259,9 +256,8 @@ using BenchmarkTools
 
       # RBF smoothing:
       is_interp = true
-      smooth = 1
-      (fine_sdf, fine_grid) = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp, smooth, taskName) # interpolation == true, aproximation == false, smooth
-      export_sdf_results(fine_sdf, fine_grid, sdf_grid, taskName, smooth, is_interp)
+      rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp) # interpolation == true, aproximation == false
+      export_rbf_results(rbf, sdf_grid, taskName)
     
       # @save "Z_$(taskName)_xp.jld2" xp
       # @save "Z_$(taskName)_Mesh.jld2" mesh
@@ -310,9 +306,8 @@ using BenchmarkTools
 
       # RBF smoothing:
       is_interp = true
-      smooth = 1
-      (fine_sdf, fine_grid) = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp, smooth, taskName) # interpolation == true, aproximation == false, smooth
-      export_sdf_results(fine_sdf, fine_grid, sdf_grid, taskName, smooth, is_interp)
+      rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, is_interp) # interpolation == true, aproximation == false
+      export_rbf_results(rbf, sdf_grid, taskName)
 
       # @save "Z_$(taskName)_cele_xp_B-$(B).jld2" xp
       # @save "Z_$(taskName)_cele_SDF_B-$(B).jld2" sdf_dists
