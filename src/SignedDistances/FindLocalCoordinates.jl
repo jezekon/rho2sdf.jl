@@ -76,6 +76,10 @@ function find_local_coordinates(
 
   opt.min_objective = objective  # Setting the minimization objective function
 
+  # Misfit of an exact solution, below (1e-6 · diagonal of the element)²: the point is found and
+  # the remaining starting points cannot improve it
+  exact_objective = 1e-12 * sum(abs2, maximum(Xₑ, dims=2) .- minimum(Xₑ, dims=2))
+
   # Iteration through starting points
   @inbounds for start_point in starting_points
     try
@@ -87,6 +91,11 @@ function find_local_coordinates(
       end
     catch _
       continue
+    end
+
+    # Stop at the first exact solution
+    if found_solution && best_objective < exact_objective
+      break
     end
   end
 
