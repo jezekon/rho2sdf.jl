@@ -22,6 +22,16 @@ Limitations of the domain clip (`domain_clip`, `src/SdfSmoothing/DomainDistance.
   2.5 h and 4.3 h from the iso-contour get the distance or the placeholder, depending on the
   rounding of the indices of the mini AABB grid (`evalDistances`).
 
+Limitations of the nodal densities (`src/MeshGrid/NodalDensities.jl`):
+- `NodalDensityLeastSquares` does not clamp the fit value, so a nodal density can leave [0, 1], although
+  the element densities from SIMP lie in it. `KeepRange` exists but nothing calls it. simp2sdf.jl has
+  the same file and clamps the fit value, this is the one deliberate difference between them.
+- The effect of the clamp on the final geometry is not known. To verify: compare the geometry with
+  and without the clamp, here also through `find_threshold_for_volume`, which takes the threshold from
+  the nodal densities. Example on the gripper of simp2sdf.jl (`test/TestData/Gripper.vtu`, 20,542
+  nodes): the clamp would change one node by more than 1e-12 (1.0047 → 1.0), the other 543 nodes above
+  1 differ by round-off only. There are no values below 0 on this mesh.
+
 Resolved:
 - R2 (weights of `FilterForNodalDensity` described as distance-weighted, while they are
   1 − L/(1.2 L_max)): the code is unchanged, its docstring now gives the weights.
