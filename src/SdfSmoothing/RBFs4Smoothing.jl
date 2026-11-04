@@ -9,6 +9,10 @@
 # the body is {φ ≥ 0}, φ = min(φ̃ - clip_shift, d_D), d_D the signed distance of D
 # (DomainDistance.jl), and clip_shift keeps the volume of this clipped body.
 #
+# The raw SDF can describe the iso-contour alone, continued beyond D (ExtendedRawSdf.jl, the default
+# of `rho2sdf`). Then φ̃ smooths only the iso-contour and d_D alone draws the faces of D.
+# {φ̃ ≥ shift} is not a body in this case, so only the clipped body is computed.
+#
 # - Interpolation: the weights solve K w = φ, so φ̃ equals the raw SDF φ at the grid nodes.
 # - Approximation: w = φ / S, S the sum of the kernel over the grid. φ̃ is smoother but does not
 #   pass through φ; it keeps the scale of a distance.
@@ -284,7 +288,7 @@ end
 """
     RBFs_smoothing(mesh::Mesh, dist::Vector, grid::Grid, is_interpolation::Bool;
                    threshold = 1e-3, volume_refine = 8, cg_reltol = 1e-12, domain_clip = true,
-                   sharpening = false)
+                   sharpening = false, isocontour_only = false)
 
 Smooth the raw SDF by Gaussian RBFs (see the top of the file) and find the shift that keeps the
 volume of the SIMP result.
@@ -293,7 +297,8 @@ volume of the SIMP result.
 2. Weights: interpolation solves K w = φ by CG (relative tolerance `cg_reltol`), approximation
    takes w = φ / S, with `sharpening = true` then w += (φ - K w) / S.
 3. The shift is found by bisection (`find_shift`) so that the volume of {φ̃ ≥ shift}
-   (`RBFBandVolume`) equals mesh.V_frac·mesh.V_domain.
+   (`RBFBandVolume`) equals mesh.V_frac·mesh.V_domain. Skipped with `isocontour_only = true`: φ̃
+   continues beyond the domain, so {φ̃ ≥ shift} is not a body.
 4. Domain clip (`domain_clip = true`): the body is clipped by the design domain, the region of
    `mesh`: φ = min(φ̃ - clip_shift, d_D) (`DomainDistance`). clip_shift is found as in step 3 so
    that the volume of {φ ≥ 0} equals the same target. The weights and the shift of step 3 do not
@@ -307,12 +312,16 @@ volume of the SIMP result.
 - `domain_clip::Bool`: Clip the body by the design domain (step 4)
 - `sharpening::Bool`: One sharpening step of the approximation weights (step 2), not used by
   interpolation
+- `isocontour_only::Bool`: `dist` describes the iso-contour alone, continued beyond the domain
+  (`extended_raw_sdf`). It describes `dist`, it does not build it (`rho2sdf` chooses the raw SDF).
+  Needs the domain clip
 
 # Returns
 - NamedTuple: the RBF field (weights, origin, h, sigma, threshold, shift, interpolation,
-  sharpening), checks (target and achieved volume, deviation from the raw SDF near the surface)
-  and the clip (domain_clip, clip_shift, clip_volume, volume_outside, domain, domain_time;
-  `nothing` without the clip)
+  sharpening, isocontour_only), checks (target and achieved volume, deviation from the raw SDF near
+  the surface) and the clip (domain_clip, clip_shift, clip_volume, volume_outside, domain,
+  domain_time; `nothing` without the clip). With `isocontour_only`, the items of the unclipped body
+  (shift, volume, volume_sampled, volume_outside) are `nothing`
 """
 function RBFs_smoothing(
     mesh::Mesh,
@@ -324,7 +333,11 @@ function RBFs_smoothing(
     cg_reltol::Float64 = 1e-12,
     domain_clip::Bool = true,
     sharpening::Bool = false,
+    isocontour_only::Bool = false,
 )
+    if isocontour_only && !domain_clip
+        error("RBFs_smoothing: the SDF of the iso-contour alone needs the domain clip")
+    end
     name = is_interpolation ? "Interpolation" :
            sharpening ? "Approximation with sharpening" : "Approximation"
     dims = Tuple(grid.N .+ 1)
@@ -354,13 +367,18 @@ function RBFs_smoothing(
     near_surface = abs.(sdf) .<= 2.5 * h
     nodal_error = maximum(abs.(rbf_at_nodes[near_surface] .- sdf[near_surface]))
 
-    # 3. Shift that keeps the volume, found by bisection:
+    # 3. Shift that keeps the volume, found by bisection. The samples of `volume_of` are needed in
+    #    any case, the clipped volume below takes them over:
     println("Computing the shift of the RBF field to meet the volume condition...")
     target_volume = mesh.V_frac * mesh.V_domain
     raw_sdf = reshape(sdf, dims)
     band_width = 2.5        # half-width of the band of RBFBandVolume in cell sizes
     volume_of = RBFBandVolume(weights, threshold, h, raw_sdf; refine = volume_refine, band_width)
-    shift, achieved = find_shift(volume_of, target_volume, h, "unclipped body")
+    if isocontour_only
+        shift = achieved = nothing
+    else
+        shift, achieved = find_shift(volume_of, target_volume, h, "unclipped body")
+    end
 
     # 4. Clip by the design domain, φ = min(φ̃ - clip_shift, d_D), and the shift of the clipped
     #    body:
@@ -374,24 +392,32 @@ function RBFs_smoothing(
         clip_shift, clip_achieved = find_shift(clipped_volume_of, target_volume, h, "clipped body")
 
         # Part of {φ̃ ≥ shift} outside the domain, removed by the clip:
-        volume_outside = achieved.volume - clipped_volume_of(shift).volume
+        volume_outside = isocontour_only ? nothing :
+                         achieved.volume - clipped_volume_of(shift).volume
     else
         d_D = domain_time = clip_shift = clip_achieved = volume_outside = nothing
     end
 
     @printf("RBF %s: %d nodes, h = %.4f\n", lowercase(name), prod(dims), h)
     @printf("  max deviation from the raw SDF near the surface: %.2e\n", nodal_error)
-    @printf("  shift = %.6f, volume %.4f (target %.4f; sub-grid h/%d: %.4f, h/%d: %.4f)\n",
-        shift, achieved.volume, target_volume,
-        volume_refine, achieved.volume_fine, volume_refine ÷ 2, achieved.volume_coarse)
+    if isocontour_only
+        @printf("  unclipped body: not computed (the raw SDF continues beyond the domain)\n")
+        @printf("  target volume %.4f\n", target_volume)
+    else
+        @printf("  shift = %.6f, volume %.4f (target %.4f; sub-grid h/%d: %.4f, h/%d: %.4f)\n",
+            shift, achieved.volume, target_volume,
+            volume_refine, achieved.volume_fine, volume_refine ÷ 2, achieved.volume_coarse)
+    end
     if domain_clip
         @printf("  domain clip (%d boundary triangles, set-up %.2f s):\n",
             length(d_D.triangles), domain_time)
         @printf("  clip_shift = %.6f, volume %.4f (sub-grid h/%d: %.4f, h/%d: %.4f)\n",
             clip_shift, clip_achieved.volume,
             volume_refine, clip_achieved.volume_fine, volume_refine ÷ 2, clip_achieved.volume_coarse)
-        @printf("  volume of {φ̃ ≥ shift} outside the domain: %.4f (%.3f %% of the target)\n",
-            volume_outside, 100 * volume_outside / target_volume)
+        if !isocontour_only
+            @printf("  volume of {φ̃ ≥ shift} outside the domain: %.4f (%.3f %% of the target)\n",
+                volume_outside, 100 * volume_outside / target_volume)
+        end
     end
 
     return (
@@ -403,9 +429,10 @@ function RBFs_smoothing(
         shift = shift,
         interpolation = is_interpolation,
         sharpening = !is_interpolation && sharpening,
+        isocontour_only = isocontour_only,
         target_volume = target_volume,
-        volume = achieved.volume,
-        volume_sampled = (achieved.volume_fine, achieved.volume_coarse),
+        volume = isocontour_only ? nothing : achieved.volume,
+        volume_sampled = isocontour_only ? nothing : (achieved.volume_fine, achieved.volume_coarse),
         volume_refine = volume_refine,
         nodal_error = nodal_error,
         domain_clip = domain_clip,
@@ -425,8 +452,9 @@ end
 Save the RBF field of `RBFs_smoothing` for the mesher (`load_rbf_source` of Implicit2TetMesh.jl)
 to `Z_<taskName>_RBF_B-<h>_<label>.jld2`, and the field to be meshed, sampled at h/2, to a VTI for
 viewing in ParaView: φ̃ - shift, or min(φ̃ - clip_shift, d_D) with the domain clip. `<label>` is
-`Interpolation`, `Approximation` or `Approximation_Sharpened`, so a run with sharpening does not
-overwrite the files of a run without it.
+`Interpolation`, `Approximation` or `Approximation_Sharpened`, with the suffix `_WholeSDF` if the
+whole raw SDF was smoothed (`isocontour_only = false`), so that the runs do not overwrite each
+other's files.
 
 The keys of the unclipped field keep their meaning with the clip: `shift` is the shift of φ̃
 alone, so a reader that does not know the clip meshes the unclipped body, with its own volume.
@@ -435,12 +463,18 @@ The clip adds `clip_shift`, `clip_volume`, `volume_outside` and the design domai
 d_D is built as in `DomainDistance`. `domain_clip` tells whether the clip was used. `sharpening`
 tells whether the weights were sharpened; the field is evaluated the same way in both cases.
 
+`isocontour_only` tells whether the smoothed raw SDF was the iso-contour alone. In this case {φ̃ ≥
+shift} is not a body, so `shift`, `volume` and `volume_outside` are not written and the body is
+given by `clip_shift` and the design domain only. A reader that does not know the clip fails on the
+missing key, it does not mesh a wrong body.
+
 # Returns
 - String: Name of the JLD2 file
 """
 function export_rbf_results(rbf, grid::Grid, taskName::String)
     name = rbf.interpolation ? "Interpolation" : "Approximation"
     label = rbf.sharpening ? "$(name)_Sharpened" : name    # in the names of the files
+    label = rbf.isocontour_only ? label : "$(label)_WholeSDF"
     B = round(rbf.h, digits = 4)
 
     # The variable names are those the mesher reads
@@ -455,6 +489,7 @@ function export_rbf_results(rbf, grid::Grid, taskName::String)
         inside = "positive",
         smoothing = lowercase(name),
         sharpening = rbf.sharpening,
+        isocontour_only = rbf.isocontour_only,
         target_volume = rbf.target_volume,
         volume = rbf.volume,
         domain_clip = rbf.domain_clip,
@@ -469,7 +504,9 @@ function export_rbf_results(rbf, grid::Grid, taskName::String)
         )
         fields = merge(fields, clip_fields)
     end
-    jldsave(file; fields...)
+
+    # Only the items of the unclipped body can be `nothing` (`isocontour_only`), see above
+    jldsave(file; (key => value for (key, value) in pairs(fields) if value !== nothing)...)
 
     # Picture of the field to be meshed, for ParaView (not used by the mesher)
     field = rbf_sample(rbf.weights, rbf.threshold, 2)
