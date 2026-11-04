@@ -8,7 +8,7 @@ using Rho2sdf.MeshGrid
 using Rho2sdf.SignedDistances
 using Rho2sdf.DataExport
 using Rho2sdf.SdfSmoothing
-using Rho2sdf.SdfSmoothing: DomainDistance, Point, rbf_value
+using Rho2sdf.SdfSmoothing: DomainDistance, Point, rbf_value, rbf_kernel_matrix, kernel_offsets
 using MAT
 using JLD2
 using LinearAlgebra
@@ -31,10 +31,10 @@ using BenchmarkTools
   RUN_BEAM = false
   RUN_CHAPADLO = false
   RUN_CHAPADLO_cele = false
-  RUN_DOMAIN_CLIP = true
+  RUN_RBF_SMOOTHING = true
 
-  if (RUN_DOMAIN_CLIP)
-    @testset "Domain clip" begin
+  if (RUN_RBF_SMOOTHING)
+    @testset "RBF smoothing" begin
       # Design domain: the block [-1, 1] × [-0.5, 0.5]² of 8 × 4 × 4 elements. Body: the bar
       # [-1, 0] × [-0.25, 0.25]², which touches the domain face x = -1.
       X, IEN, _, _ = selectPrimitiveGeometry("block", [8, 4, 4])
@@ -69,26 +69,26 @@ using BenchmarkTools
         @test largest_error <= 1e-12
       end
 
+      # Raw SDF as rho2sdf builds it: distance to the iso-contour, i.e. the faces of the bar
+      # except its end x = -1, which lies on the domain boundary; positive in the bar. It jumps
+      # from + to - across x = -1, so the RBF field reaches beyond the domain face.
+      iso_faces = (([0.0, -0.25, -0.25], [0.0, 0.25, 0.25]),
+                   ([-1.0, -0.25, -0.25], [0.0, -0.25, 0.25]),
+                   ([-1.0, 0.25, -0.25], [0.0, 0.25, 0.25]),
+                   ([-1.0, -0.25, -0.25], [0.0, 0.25, -0.25]),
+                   ([-1.0, -0.25, 0.25], [0.0, 0.25, 0.25]))
+      function bar_sdf(x)
+        distance = minimum(box_gap(x, low, high) for (low, high) in iso_faces)
+        in_bar = box_gap(x, [-1.0, -0.25, -0.25], [0.0, 0.25, 0.25]) == 0
+        return in_bar ? distance : -distance
+      end
+
+      X_min, X_max = getMesh_AABB(mesh.X)
+      sdf_grid = Grid(X_min, X_max, 16, 3)
+      points = generateGridPoints(sdf_grid)
+      raw_sdf = [bar_sdf(points[:, n]) for n in 1:sdf_grid.ngp]
+
       @testset "Clip keeps the volume" begin
-        # Raw SDF as rho2sdf builds it: distance to the iso-contour, i.e. the faces of the bar
-        # except its end x = -1, which lies on the domain boundary; positive in the bar. It jumps
-        # from + to - across x = -1, so the RBF field reaches beyond the domain face.
-        iso_faces = (([0.0, -0.25, -0.25], [0.0, 0.25, 0.25]),
-                     ([-1.0, -0.25, -0.25], [0.0, -0.25, 0.25]),
-                     ([-1.0, 0.25, -0.25], [0.0, 0.25, 0.25]),
-                     ([-1.0, -0.25, -0.25], [0.0, 0.25, -0.25]),
-                     ([-1.0, -0.25, 0.25], [0.0, 0.25, 0.25]))
-        function bar_sdf(x)
-          distance = minimum(box_gap(x, low, high) for (low, high) in iso_faces)
-          in_bar = box_gap(x, [-1.0, -0.25, -0.25], [0.0, 0.25, 0.25]) == 0
-          return in_bar ? distance : -distance
-        end
-
-        X_min, X_max = getMesh_AABB(mesh.X)
-        sdf_grid = Grid(X_min, X_max, 16, 3)
-        points = generateGridPoints(sdf_grid)
-        raw_sdf = [bar_sdf(points[:, n]) for n in 1:sdf_grid.ngp]
-
         # Without the clip, rho2sdf ca529c2 gave (shift, volume, sum of the weights). The last
         # bits differ between machines, so they are compared with tolerances; the volume only to
         # 1e-5, as the bisection stops anywhere within the tolerance of the volume condition.
@@ -122,6 +122,42 @@ using BenchmarkTools
           @test any(rbf_field .- clipped.shift .> 0)
           @test all(clipped_field .<= 0)
         end
+      end
+
+      @testset "Sharpening" begin
+        # φ̃ follows the raw SDF more closely, so the shift is smaller; the volume is kept and
+        # interpolation does not use it
+        approximation = RBFs_smoothing(mesh, raw_sdf, sdf_grid, false)
+        sharpened = RBFs_smoothing(mesh, raw_sdf, sdf_grid, false; sharpening = true)
+        @test !approximation.sharpening && sharpened.sharpening
+        @test sharpened.nodal_error < approximation.nodal_error
+        @test abs(sharpened.shift) < abs(approximation.shift)
+        @test abs(sharpened.clip_volume / sharpened.target_volume - 1) <= 1e-6
+        @test RBFs_smoothing(mesh, raw_sdf, sdf_grid, true; sharpening = true).weights ==
+              RBFs_smoothing(mesh, raw_sdf, sdf_grid, true).weights
+
+        # One step with the kernel matrix K, the formula at the top of RBFs4Smoothing.jl
+        K = rbf_kernel_matrix(Tuple(sdf_grid.N .+ 1), sharpened.threshold)
+        S = sum(kernel_offsets(sharpened.threshold)[2])
+        @test vec(sharpened.weights) ≈ vec(approximation.weights) .+
+              (raw_sdf .- K * vec(approximation.weights)) ./ S
+
+        # With and without sharpening the results go to different files (JLD2 and VTI)
+        mktempdir() do dir
+          cd(dir) do
+            approximation_file = export_rbf_results(approximation, sdf_grid, "bar")
+            sharpened_file = export_rbf_results(sharpened, sdf_grid, "bar")
+            @test approximation_file != sharpened_file
+            @test length(readdir()) == 4
+            @test !load(approximation_file, "sharpening") && load(sharpened_file, "sharpening")
+          end
+        end
+
+        # Off by default; outside the approximation it is ignored with a warning
+        @test !Rho2sdfOptions().rbf_sharpening
+        @test Rho2sdfOptions(rbf_smoothing = :approximation, rbf_sharpening = true).rbf_sharpening
+        ignored = @test_logs (:warn, r"rbf_sharpening") Rho2sdfOptions(rbf_sharpening = true)
+        @test !ignored.rbf_sharpening
       end
     end
   end

@@ -12,6 +12,9 @@
 # - Interpolation: the weights solve K w = φ, so φ̃ equals the raw SDF φ at the grid nodes.
 # - Approximation: w = φ / S, S the sum of the kernel over the grid. φ̃ is smoother but does not
 #   pass through φ; it keeps the scale of a distance.
+# - Approximation with sharpening (optional): w += (φ - K w) / S, one correction by the deviation of
+#   φ̃ from φ at the nodes. The deviation is zero where φ is linear, so flat parts stay and only
+#   thin members and corners move back towards φ. The kernel does not change.
 #
 # The field is not sampled back on a grid: its definition (weights, grid, kernel, shift) is
 # exported and the mesher (Implicit2TetMesh.jl) evaluates it wherever it needs.
@@ -280,14 +283,15 @@ end
 
 """
     RBFs_smoothing(mesh::Mesh, dist::Vector, grid::Grid, is_interpolation::Bool;
-                   threshold = 1e-3, volume_refine = 8, cg_reltol = 1e-12, domain_clip = true)
+                   threshold = 1e-3, volume_refine = 8, cg_reltol = 1e-12, domain_clip = true,
+                   sharpening = false)
 
 Smooth the raw SDF by Gaussian RBFs (see the top of the file) and find the shift that keeps the
 volume of the SIMP result.
 
 1. Placeholders of the far nodes are replaced (`fill_far_distances`).
 2. Weights: interpolation solves K w = φ by CG (relative tolerance `cg_reltol`), approximation
-   takes w = φ / S.
+   takes w = φ / S, with `sharpening = true` then w += (φ - K w) / S.
 3. The shift is found by bisection (`find_shift`) so that the volume of {φ̃ ≥ shift}
    (`RBFBandVolume`) equals mesh.V_frac·mesh.V_domain.
 4. Domain clip (`domain_clip = true`): the body is clipped by the design domain, the region of
@@ -301,12 +305,14 @@ volume of the SIMP result.
 - `grid::Grid`: Grid structure
 - `is_interpolation::Bool`: Interpolation (true) or approximation (false)
 - `domain_clip::Bool`: Clip the body by the design domain (step 4)
+- `sharpening::Bool`: One sharpening step of the approximation weights (step 2), not used by
+  interpolation
 
 # Returns
-- NamedTuple: the RBF field (weights, origin, h, sigma, threshold, shift, interpolation), checks
-  (target and achieved volume, deviation from the raw SDF near the surface) and the clip
-  (domain_clip, clip_shift, clip_volume, volume_outside, domain, domain_time; `nothing` without
-  the clip)
+- NamedTuple: the RBF field (weights, origin, h, sigma, threshold, shift, interpolation,
+  sharpening), checks (target and achieved volume, deviation from the raw SDF near the surface)
+  and the clip (domain_clip, clip_shift, clip_volume, volume_outside, domain, domain_time;
+  `nothing` without the clip)
 """
 function RBFs_smoothing(
     mesh::Mesh,
@@ -317,8 +323,10 @@ function RBFs_smoothing(
     volume_refine::Int = 8,
     cg_reltol::Float64 = 1e-12,
     domain_clip::Bool = true,
+    sharpening::Bool = false,
 )
-    name = is_interpolation ? "Interpolation" : "Approximation"
+    name = is_interpolation ? "Interpolation" :
+           sharpening ? "Approximation with sharpening" : "Approximation"
     dims = Tuple(grid.N .+ 1)
     h = grid.cell_size
 
@@ -332,7 +340,12 @@ function RBFs_smoothing(
         w = cg(K, sdf; reltol = cg_reltol, maxiter = 10_000)
     else
         _, kernel_values = kernel_offsets(threshold)
-        w = sdf ./ sum(kernel_values)
+        S = sum(kernel_values)
+        w = sdf ./ S
+        if sharpening
+            # K w is the RBF sum at the nodes, so the sparse matrix K need not be built
+            w .+= (sdf .- vec(rbf_sample(reshape(w, dims), threshold, 1))) ./ S
+        end
     end
     weights = reshape(w, dims)
 
@@ -389,6 +402,7 @@ function RBFs_smoothing(
         threshold = threshold,
         shift = shift,
         interpolation = is_interpolation,
+        sharpening = !is_interpolation && sharpening,
         target_volume = target_volume,
         volume = achieved.volume,
         volume_sampled = (achieved.volume_fine, achieved.volume_coarse),
@@ -409,25 +423,28 @@ end
     export_rbf_results(rbf, grid, taskName)
 
 Save the RBF field of `RBFs_smoothing` for the mesher (`load_rbf_source` of Implicit2TetMesh.jl)
-to `Z_<taskName>_RBF_B-<h>_<Interpolation|Approximation>.jld2`, and the field to be meshed,
-sampled at h/2, to a VTI for viewing in ParaView: φ̃ - shift, or min(φ̃ - clip_shift, d_D) with the
-domain clip.
+to `Z_<taskName>_RBF_B-<h>_<label>.jld2`, and the field to be meshed, sampled at h/2, to a VTI for
+viewing in ParaView: φ̃ - shift, or min(φ̃ - clip_shift, d_D) with the domain clip. `<label>` is
+`Interpolation`, `Approximation` or `Approximation_Sharpened`, so a run with sharpening does not
+overwrite the files of a run without it.
 
 The keys of the unclipped field keep their meaning with the clip: `shift` is the shift of φ̃
 alone, so a reader that does not know the clip meshes the unclipped body, with its own volume.
 The clip adds `clip_shift`, `clip_volume`, `volume_outside` and the design domain:
 `domain_nodes` (3 × nodes) and `domain_elements` (8 × elements, node order of `Mesh`), from which
-d_D is built as in `DomainDistance`. `domain_clip` tells whether the clip was used.
+d_D is built as in `DomainDistance`. `domain_clip` tells whether the clip was used. `sharpening`
+tells whether the weights were sharpened; the field is evaluated the same way in both cases.
 
 # Returns
 - String: Name of the JLD2 file
 """
 function export_rbf_results(rbf, grid::Grid, taskName::String)
     name = rbf.interpolation ? "Interpolation" : "Approximation"
+    label = rbf.sharpening ? "$(name)_Sharpened" : name    # in the names of the files
     B = round(rbf.h, digits = 4)
 
     # The variable names are those the mesher reads
-    file = "Z_$(taskName)_RBF_B-$(B)_$(name).jld2"
+    file = "Z_$(taskName)_RBF_B-$(B)_$(label).jld2"
     fields = (
         weights = rbf.weights,
         origin = rbf.origin,
@@ -437,6 +454,7 @@ function export_rbf_results(rbf, grid::Grid, taskName::String)
         shift = rbf.shift,
         inside = "positive",
         smoothing = lowercase(name),
+        sharpening = rbf.sharpening,
         target_volume = rbf.target_volume,
         volume = rbf.volume,
         domain_clip = rbf.domain_clip,
@@ -461,7 +479,7 @@ function export_rbf_results(rbf, grid::Grid, taskName::String)
     else
         field = field .- rbf.shift
     end
-    exportSdfToVTI("$(taskName)_B-$(B)_RBF_$(name).vti", grid, vec(field), "distance", 2)
+    exportSdfToVTI("$(taskName)_B-$(B)_RBF_$(label).vti", grid, vec(field), "distance", 2)
 
     println("Saved RBF definition to $file")
     return file

@@ -16,6 +16,9 @@ Configuration options for density to SDF conversion.
 - `domain_clip::Bool`: Clip the RBF field by the design domain (the input mesh),
   min(φ̃ - clip_shift, d_D), with clip_shift keeping the volume (`RBFs_smoothing`). Default `true`.
   Used by `:interpolation` and `:approximation` only; `:none` exports the raw SDF unchanged.
+- `rbf_sharpening::Bool`: One sharpening step of the approximation weights: the field follows the
+  raw SDF more closely at thin members and corners, flat parts stay as they are (`RBFs_smoothing`).
+  Default `false`. Used by `:approximation` only.
 """
 struct Rho2sdfOptions
     threshold_density::Union{Float64, Nothing}
@@ -24,6 +27,7 @@ struct Rho2sdfOptions
     export_raw_sdf::Bool
     rbf_smoothing::Symbol
     domain_clip::Bool
+    rbf_sharpening::Bool
 
     # Constructor with default values
     function Rho2sdfOptions(;
@@ -32,7 +36,8 @@ struct Rho2sdfOptions
         export_nodal_densities=false,
         export_raw_sdf=false,
         rbf_smoothing=:interpolation,
-        domain_clip=true
+        domain_clip=true,
+        rbf_sharpening=false
     )
         # Validate threshold density if provided
         if threshold_density !== nothing
@@ -56,7 +61,13 @@ struct Rho2sdfOptions
             rbf_smoothing = :interpolation
         end
 
-        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip)
+        # Sharpening changes the approximation weights only
+        if rbf_sharpening && rbf_smoothing != :approximation
+            @warn "rbf_sharpening is used by rbf_smoothing = :approximation only, not by :$rbf_smoothing. Ignoring it."
+            rbf_sharpening = false
+        end
+
+        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip, rbf_sharpening)
     end
 end
 
@@ -144,7 +155,7 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
 
     # RBF smoothing: the RBF field itself is exported and evaluated in the mesher
     rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_smoothing == :interpolation;
-        domain_clip = options.domain_clip)
+        domain_clip = options.domain_clip, sharpening = options.rbf_sharpening)
     export_rbf_results(rbf, sdf_grid, taskName)
 
     # Return all relevant results
