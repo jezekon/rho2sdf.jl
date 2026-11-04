@@ -107,8 +107,9 @@ using BenchmarkTools
           @test clipped.weights == unclipped.weights
           @test (clipped.shift, clipped.volume) == (unclipped.shift, unclipped.volume)
 
-          # The clipped body keeps the volume
-          @test abs(clipped.clip_volume / clipped.target_volume - 1) <= 1e-6
+          # The clipped body keeps the volume. The volume is piecewise constant in the shift, with
+          # steps of about 6e-6 on this coarse grid, and the bisection cannot get below them.
+          @test abs(clipped.clip_volume / clipped.target_volume - 1) <= 1e-5
           @test clipped.volume_outside > 0
 
           # Just beyond the face x = -1, φ̃ - shift > 0 at some points (the overshoot) while the
@@ -132,7 +133,7 @@ using BenchmarkTools
         @test !approximation.sharpening && sharpened.sharpening
         @test sharpened.nodal_error < approximation.nodal_error
         @test abs(sharpened.shift) < abs(approximation.shift)
-        @test abs(sharpened.clip_volume / sharpened.target_volume - 1) <= 1e-6
+        @test abs(sharpened.clip_volume / sharpened.target_volume - 1) <= 1e-5
         @test RBFs_smoothing(mesh, raw_sdf, sdf_grid, true; sharpening = true).weights ==
               RBFs_smoothing(mesh, raw_sdf, sdf_grid, true).weights
 
