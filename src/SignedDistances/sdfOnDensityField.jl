@@ -149,13 +149,16 @@ end
 
 
 # MAIN FUNCTION for eval SDF
+# domain_faces = false: only the ρₜ iso-contour is the surface, the faces of the design domain (the
+# outer boundary of the mesh) are left out (`extended_raw_sdf`).
 function evalDistances(
   mesh::Mesh,
   grid::Grid,
   points::Matrix,
   ρₙ::Vector{Float64},
-  ρₜ::Float64,
-) 
+  ρₜ::Float64;
+  domain_faces::Bool = true,
+)
 
   print_info("\nComputing distace function...")
 
@@ -184,7 +187,10 @@ function evalDistances(
   nsn = mesh.nsn # number of face nodes
   # println("number of all elements: ", nel)
 
-  ngp = grid.ngp # number of nodes in grid
+  # Faces searched for the outer boundary of the mesh; none without the faces of the design domain
+  faces = domain_faces ? (1:nes) : (1:0)
+
+  ngp = size(points, 2) # number of points: the grid nodes, or any points in the box of the grid
   big = -1.0e10
   dist = big * ones(ngp) # distance field initialization
   xp = zeros(nsd, ngp) # souřadnice bodů vrcholů (3xngp)
@@ -216,7 +222,7 @@ function evalDistances(
       commonEls = []
 
       # cycle through element faces (6)
-      for sg = 1:nes
+      for sg in faces
         commonEls = INE[IEN[mesh.ISN[sg][1], el]]
         for a = 2:nsn
           idx = findall(in(INE[IEN[ISN[sg][a], el]]), commonEls) # for how many elements does this face belong ?
@@ -314,7 +320,7 @@ function evalDistances(
         # NOTE: two isocountour in one element:
 
         # cycle through element faces (6)
-        for sg = 1:nes
+        for sg in faces
           commonEls = INE[IEN[mesh.ISN[sg][1], el]]
           for a = 2:nsn
             idx = findall(in(INE[IEN[ISN[sg][a], el]]), commonEls) # for how many elements does this face belong ?

@@ -46,7 +46,7 @@ mutable struct LinkedList # dividing a regular grid into regions
     # Maps points in a 3D space to the corresponding grid cells.
     function LinkedList(grid::Grid, X::Matrix{Float64})
 
-        np = grid.ngp # Number of grid points
+        np = size(X, 2) # Number of points: the grid nodes, or any points in the box of the grid
         N = grid.N
         AABB_min = grid.AABB_min
         AABB_max = grid.AABB_max
