@@ -14,7 +14,8 @@ options = Rho2sdfOptions(
     sdf_grid_setup=:automatic,         # automatic/manual grid setup
     export_nodal_densities=true,    # export nodal field to Paraview
     export_raw_sdf=true,            # export not smoothed SDF to Paraview
-    rbf_smoothing=:interpolation    # none/interpolation/approximation of SDF using RBFs
+    rbf_smoothing=:interpolation,   # none/interpolation/approximation of SDF using RBFs
+    rbf_isocontour_only=true        # smooth only the isocontour, the clip draws the domain faces
 )
 
 result = rho2sdf("chapadlo", X, IEN, rho, options=options)

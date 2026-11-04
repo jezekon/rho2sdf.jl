@@ -19,6 +19,11 @@ Configuration options for density to SDF conversion.
 - `rbf_sharpening::Bool`: One sharpening step of the approximation weights: the field follows the
   raw SDF more closely at thin members and corners, flat parts stay as they are (`RBFs_smoothing`).
   Default `false`. Used by `:approximation` only.
+- `rbf_isocontour_only::Bool`: Smooth only the SDF of the iso-contour, continued beyond the design
+  domain (`extended_raw_sdf`); the faces of the domain are drawn by the clip, not smoothed, so the
+  field leaves no pits in them. `false` smooths the whole raw SDF, which includes the faces of the
+  domain (files with the suffix `_WholeSDF`). Default `true`. Used by `:interpolation` and
+  `:approximation` only, and it needs `domain_clip`; `:none` exports the raw SDF unchanged.
 """
 struct Rho2sdfOptions
     threshold_density::Union{Float64, Nothing}
@@ -28,6 +33,7 @@ struct Rho2sdfOptions
     rbf_smoothing::Symbol
     domain_clip::Bool
     rbf_sharpening::Bool
+    rbf_isocontour_only::Bool
 
     # Constructor with default values
     function Rho2sdfOptions(;
@@ -37,7 +43,8 @@ struct Rho2sdfOptions
         export_raw_sdf=false,
         rbf_smoothing=:interpolation,
         domain_clip=true,
-        rbf_sharpening=false
+        rbf_sharpening=false,
+        rbf_isocontour_only=true
     )
         # Validate threshold density if provided
         if threshold_density !== nothing
@@ -67,7 +74,13 @@ struct Rho2sdfOptions
             rbf_sharpening = false
         end
 
-        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip, rbf_sharpening)
+        # Without the clip nothing would draw the faces of the design domain
+        if rbf_isocontour_only && !domain_clip && rbf_smoothing != :none
+            @warn "rbf_isocontour_only needs domain_clip = true. Smoothing the whole raw SDF instead."
+            rbf_isocontour_only = false
+        end
+
+        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip, rbf_sharpening, rbf_isocontour_only)
     end
 end
 
@@ -85,7 +98,9 @@ Convert element densities to Signed Distance Function representation.
 
 # Returns
 - `Tuple`: (sdf_grid, sdf_dists, rbf). `sdf_dists` is the raw SDF at the grid nodes, `rbf` the
-  RBF field of `RBFs_smoothing` (`nothing` for `rbf_smoothing = :none`).
+  RBF field of `RBFs_smoothing` (`nothing` for `rbf_smoothing = :none`). `sdf_dists`, and the file
+  of `export_raw_sdf`, hold what went to the RBFs: with `rbf_isocontour_only`, the SDF of the
+  iso-contour alone (`extended_raw_sdf`, file with the suffix `_IsoContour`).
 
 # Example
 ```julia
@@ -98,7 +113,8 @@ options = Rho2sdfOptions(
     sdf_grid_setup=:automatic,
     export_nodal_densities=true,
     rbf_smoothing=:approximation,
-    domain_clip=true
+    domain_clip=true,
+    rbf_isocontour_only=true
 )
 result = rho2sdf("chapadlo", X, IEN, rho, options=options)
 """
@@ -136,15 +152,22 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
     # Generate grid points for the SDF calculation
     points = generateGridPoints(sdf_grid)
     
-    # Calculate SDF from densities
-    (dists, xp) = evalDistances(mesh, sdf_grid, points, ρₙ, ρₜ)
-    signs = Sign_Detection(mesh, sdf_grid, points, ρₙ, ρₜ)
-    sdf_dists = dists .* signs  # Combine distances with signs to create signed distance field
-    
-    # Export raw SDF to VTK if requested
+    # Calculate SDF from densities. By default the RBFs smooth only the SDF of the iso-contour and
+    # the clip draws the faces of the design domain
+    isocontour_only = options.rbf_smoothing != :none && options.rbf_isocontour_only
+    if isocontour_only
+        sdf_dists = extended_raw_sdf(mesh, sdf_grid, points, ρₙ, ρₜ)
+    else
+        (dists, xp) = evalDistances(mesh, sdf_grid, points, ρₙ, ρₜ)
+        signs = Sign_Detection(mesh, sdf_grid, points, ρₙ, ρₜ)
+        sdf_dists = dists .* signs  # Combine distances with signs to create signed distance field
+    end
+
+    # Export raw SDF to VTK if requested; the SDF of the iso-contour goes to a file of its own
     if options.export_raw_sdf
         B = round(sdf_grid.cell_size, digits=4)
-        exportSdfToVTI(taskName * "_SDF_CellSize-" * string(B) * ".vti", sdf_grid, sdf_dists, "distance")
+        suffix = isocontour_only ? "_IsoContour" : ""
+        exportSdfToVTI(taskName * "_SDF_CellSize-" * string(B) * suffix * ".vti", sdf_grid, sdf_dists, "distance")
     end
     
     # Raw SDF only: exported on the grid for the mesher
@@ -155,7 +178,7 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
 
     # RBF smoothing: the RBF field itself is exported and evaluated in the mesher
     rbf = RBFs_smoothing(mesh, sdf_dists, sdf_grid, options.rbf_smoothing == :interpolation;
-        domain_clip = options.domain_clip, sharpening = options.rbf_sharpening)
+        domain_clip = options.domain_clip, sharpening = options.rbf_sharpening, isocontour_only)
     export_rbf_results(rbf, sdf_grid, taskName)
 
     # Return all relevant results
