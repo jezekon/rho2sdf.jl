@@ -130,8 +130,9 @@ the top of the file). Usage: `d_D = DomainDistance(mesh, cap)`, then `d_D(x)`.
 2. Bins: cubes of edge cap/2 over the box of the mesh enlarged by `cap`. Each bin lists the
    triangles that can lie within `cap` of it, sorted by their distance from the bin centre, and
    the elements whose bounding box overlaps it.
-3. `d_D(x)`: distance to the nearest triangle of the bin of x, at most `cap`; positive if x lies
-   in one of the elements of the bin (`in_element`).
+3. `d_D(x)`: distance to the nearest triangle of the bin of x, at most `cap`
+   (`nearest_boundary_point`); positive if x lies in one of the elements of the bin
+   (`inside_domain`).
 
 |d_D| is exact up to `cap`. Farther points get ±`cap`: only their sign is used.
 
@@ -146,6 +147,7 @@ struct DomainDistance
     element_boxes::Vector{NTuple{2,Point}}     # bounding box (min, max) of each element
     faces::Vector{Vector{Int}}                 # local nodes of the element faces (Mesh.ISN)
     triangles::Vector{NTuple{3,Point}}         # boundary faces, 4 triangles each
+    triangle_elements::Vector{Int}             # element of each boundary triangle
     cap::Float64                               # largest |d_D| returned
     bin_origin::Point                          # lower corner of the first bin
     bin_size::Float64                          # edge of a bin
@@ -170,10 +172,12 @@ function DomainDistance(mesh::Mesh, cap::Float64)
         end
     end
     triangles = NTuple{3,Point}[]
+    triangle_elements = Int[]
     for e = 1:mesh.nel
         for face in mesh.ISN
             if face_count[face_key(e, face)] == 1
                 append!(triangles, face_triangles(corners[e], face))
+                append!(triangle_elements, (e, e, e, e))
             end
         end
     end
@@ -227,8 +231,66 @@ function DomainDistance(mesh::Mesh, cap::Float64)
         end
     end
 
-    return DomainDistance(mesh.X, mesh.IEN, corners, element_boxes, mesh.ISN, triangles, cap,
-        bin_origin, bin_size, bin_dims, bin_triangles, bin_centre_distances, bin_elements)
+    return DomainDistance(mesh.X, mesh.IEN, corners, element_boxes, mesh.ISN, triangles,
+        triangle_elements, cap, bin_origin, bin_size, bin_dims, bin_triangles, bin_centre_distances,
+        bin_elements)
+end
+
+"""
+    nearest_boundary_point(d_D, x)
+
+Point of the boundary of the design domain nearest to x, searched among the triangles of the bin
+of x.
+
+# Returns
+- Tuple: the distance, the point and its triangle; (`cap`, x, 0) if no triangle lies within `cap`
+"""
+function nearest_boundary_point(d_D::DomainDistance, x::Point)
+    ijk = floor.(Int, (x .- d_D.bin_origin) ./ d_D.bin_size) .+ 1
+    if any(ijk .< 1) || any(ijk .> d_D.bin_dims)
+        return d_D.cap, x, 0     # outside the bins: farther than cap from the mesh
+    end
+    bin = ijk[1] + d_D.bin_dims[1] * (ijk[2] - 1 + d_D.bin_dims[2] * (ijk[3] - 1))
+
+    # A triangle is at least its distance from the bin centre minus |x - centre| away from x, so
+    # the sorted search stops at the first one beyond:
+    bin_centre = d_D.bin_origin + d_D.bin_size * (ijk .- 0.5)
+    centre_offset = norm(x - bin_centre)
+    distance, point, triangle = d_D.cap, x, 0
+    for (t, centre_distance) in zip(d_D.bin_triangles[bin], d_D.bin_centre_distances[bin])
+        if centre_distance - centre_offset >= distance
+            break
+        end
+        a, b, c = d_D.triangles[t]
+        closest = closest_point_on_triangle(x, a, b, c)
+        closest_distance = norm(x - closest)
+        if closest_distance < distance
+            distance, point, triangle = closest_distance, closest, t
+        end
+    end
+    return distance, point, triangle
+end
+
+"""
+    inside_domain(d_D, x)
+
+Whether x lies in one of the elements of its bin, without a search of the boundary triangles.
+Outside the bins it is `false`.
+"""
+function inside_domain(d_D::DomainDistance, x::Point)
+    ijk = floor.(Int, (x .- d_D.bin_origin) ./ d_D.bin_size) .+ 1
+    if any(ijk .< 1) || any(ijk .> d_D.bin_dims)
+        return false     # outside the bins: farther than cap from the mesh
+    end
+    bin = ijk[1] + d_D.bin_dims[1] * (ijk[2] - 1 + d_D.bin_dims[2] * (ijk[3] - 1))
+
+    for e in d_D.bin_elements[bin]
+        box_min, box_max = d_D.element_boxes[e]
+        if all(box_min .<= x .<= box_max) && in_element(x, d_D.corners[e], d_D.faces)
+            return true
+        end
+    end
+    return false
 end
 
 """
@@ -237,33 +299,8 @@ end
 Signed distance of the design domain at x, positive inside, |d_D| ≤ cap.
 """
 function (d_D::DomainDistance)(x::Point)
-    ijk = floor.(Int, (x .- d_D.bin_origin) ./ d_D.bin_size) .+ 1
-    if any(ijk .< 1) || any(ijk .> d_D.bin_dims)
-        return -d_D.cap     # outside the bins: farther than cap from the mesh
-    end
-    bin = ijk[1] + d_D.bin_dims[1] * (ijk[2] - 1 + d_D.bin_dims[2] * (ijk[3] - 1))
-
-    # 1. Distance to the nearest boundary triangle. A triangle is at least its distance from the bin
-    #    centre minus |x - centre| away from x, so the sorted search stops at the first one beyond:
-    bin_centre = d_D.bin_origin + d_D.bin_size * (ijk .- 0.5)
-    centre_offset = norm(x - bin_centre)
-    distance = d_D.cap
-    for (t, centre_distance) in zip(d_D.bin_triangles[bin], d_D.bin_centre_distances[bin])
-        if centre_distance - centre_offset >= distance
-            break
-        end
-        a, b, c = d_D.triangles[t]
-        distance = min(distance, norm(x - closest_point_on_triangle(x, a, b, c)))
-    end
-
-    # 2. Sign: inside if x lies in one of the elements of the bin:
-    for e in d_D.bin_elements[bin]
-        box_min, box_max = d_D.element_boxes[e]
-        if all(box_min .<= x .<= box_max) && in_element(x, d_D.corners[e], d_D.faces)
-            return distance
-        end
-    end
-    return -distance
+    distance, _, _ = nearest_boundary_point(d_D, x)
+    return inside_domain(d_D, x) ? distance : -distance
 end
 
 """
