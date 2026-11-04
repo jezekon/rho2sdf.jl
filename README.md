@@ -32,12 +32,15 @@ isocontour and refines it with radial basis functions (RBFs) while preserving th
 The extraction is purely geometric and requires no further optimization. The resulting boundary appears to originate
 from a much finer discretization, while the optimization retains the computational efficiency of a coarse mesh.
 
-This is the implementation of
+The implementation is based on the article
 
 > O. Ježek, J. Kopačka, M. Isoz, D. Gabriel, P. Maršálek, M. Šotola, R. Halama.
 > *Smooth geometry extraction from SIMP topology optimization: Signed distance function approach with volume
 > preservation.* Advances in Engineering Software 212 (2026) 104071.
 > [doi:10.1016/j.advengsoft.2025.104071](https://doi.org/10.1016/j.advengsoft.2025.104071)
+
+The code has been developed further since the publication, so some details differ from the article, but the main
+idea remains the same.
 
 ## How it works
 
