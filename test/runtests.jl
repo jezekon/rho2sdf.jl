@@ -578,10 +578,10 @@ using BenchmarkTools
   if (RUN_BEAM)
     @testset "Chapadlo" begin
       ## Inputs:
-      taskName = "cantilever_beam_vfrac_04"
+      taskName = "cantilever_beam"
       
-      ## Read FEM mesh:
-      data = matread(taskName * ".mat")
+      ## Read FEM mesh: SIMP result of EasySIMP.jl (test/Examples/data)
+      data = matread(joinpath(@__DIR__, "Examples", "data", "cantilever_beam_simp.mat"))
       (X, IEN, rho) = MeshInformations(data)
 
       # Custom options
@@ -605,8 +605,8 @@ using BenchmarkTools
       N = 60  # Number of cells along the longest side
       # ρₜ = 0.5 # Threshold density (isosurface level)
 
-      ## Read FEM mesh:
-      data = matread(taskName * ".mat")
+      ## Read FEM mesh: SIMP result of EasySIMP.jl (test/Examples/data)
+      data = matread(joinpath(@__DIR__, "Examples", "data", "gripper_simp.mat"))
       (X, IEN, rho) = MeshInformations(data)
       #Z,idx_Z = findall(x->X[3,i] > 50 for i in [1:size(X,2)])
 
@@ -658,8 +658,8 @@ using BenchmarkTools
       taskName = "chapadlo"
       # ρₜ = 0.5 # Threshold density (isosurface level)
 
-      ## Read FEM mesh:
-      data = matread(taskName * ".mat")
+      ## Read FEM mesh: SIMP result of EasySIMP.jl (test/Examples/data)
+      data = matread(joinpath(@__DIR__, "Examples", "data", "gripper_simp.mat"))
       (X, IEN, rho) = MeshInformations(data)
 
       ## Generate FEM mesh structure:

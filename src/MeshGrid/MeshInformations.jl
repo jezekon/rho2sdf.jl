@@ -4,7 +4,7 @@ function MeshInformations(data::Any)
   mesh = data["msh"]
   X = mesh["X"] # Matrix
   X = [X[:, i] for i in axes(X, 2)]
-  # The .mat files number the nodes from 0 (chapadlo, sphere) or from 1 (cantilever_beam_*)
+  # The .mat files number the nodes from 0 (sphere) or from 1 (test/Examples/data)
   IEN = convert(Array{Int64}, mesh["IEN"]) # Matrix
   if minimum(IEN) == 0 && maximum(IEN) == length(X) - 1
     IEN = IEN .+ 1

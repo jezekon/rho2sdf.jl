@@ -11,3 +11,5 @@
 *.vti
 
 !doc/*.png
+
+/results

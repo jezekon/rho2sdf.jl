@@ -7,9 +7,8 @@ using Statistics
 using Rho2sdf.MeshGrid
 using MAT
 
-# Data from Matlab:
-taskName = "chapadlo"  # Define the task name, used for data file naming
-data = matread(taskName * ".mat")  # Read the Matlab data file with the specified task name
+# The gripper (SIMP result of EasySIMP.jl, test/Examples/data):
+data = matread(joinpath(@__DIR__, "..", "Examples", "data", "gripper_simp.mat"))
 (X, IEN, rho) = MeshGrid.MeshInformations(data)  # Extract mesh information from the data
 
 # Verification of the node numbering convention in the element:

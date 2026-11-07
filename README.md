@@ -72,8 +72,8 @@ rho2sdf("beam", X, IEN, rho; options = Rho2sdfOptions(sdf_grid_setup = :automati
 ```
 
 The smooth field is saved to `Z_beam_RBF_*.jld2` for Implicit2TetMesh.jl, together with a VTI file for ParaView.
-Examples: [`cantilever_beam.jl`](cantilever_beam.jl) and [`chapadlo_run.jl`](chapadlo_run.jl) (the gripper) with the
-inputs in [`test/`](test). All options: `?Rho2sdfOptions`.
+Examples: [`01_cantilever_beam.jl`](test/Examples/01_cantilever_beam.jl) and [`02_gripper.jl`](test/Examples/02_gripper.jl),
+with SIMP results of [EasySIMP.jl](https://github.com/jezekon/EasySIMP.jl) as inputs. All options: `?Rho2sdfOptions`.
 
 ## Citation
 
