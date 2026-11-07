@@ -405,6 +405,15 @@ using BenchmarkTools
         @test rbf.weights == RBFs_smoothing(mesh, expected_whole, grid, true).weights
         @test any(endswith("_Interpolation_WholeSDF.jld2"), files)
         @test any(contains("_SDF_CellSize-"), files) && !any(endswith("_IsoContour.vti"), files)
+
+        # A fixed grid step: the grid of the prompt (`:manual`), without the prompt
+        B = 1.5 * grid.cell_size
+        grid_B, _, _, _ = run_rho2sdf(grid_step = B, rbf_smoothing = :none)
+        Xmin, Xmax = getMesh_AABB(mesh.X)
+        @test grid_B.N == Grid(Xmin, Xmax, floor(Int, maximum(Xmax .- Xmin) / B), 3).N
+        @test grid_B.N != grid.N
+        @test Rho2sdfOptions(grid_step = 2).grid_step === 2.0
+        @test_throws ErrorException Rho2sdfOptions(grid_step = 0.0)
       end
     end
   end

@@ -91,11 +91,16 @@ function analyze_mesh(distances::Matrix{Float64})
   return median_edge_length
 end
 
-function noninteractive_sdf_grid_setup(mesh::Mesh)
+# Grid without the prompt: the given grid step B, or the median edge of the mesh (B = nothing)
+function noninteractive_sdf_grid_setup(mesh::Mesh, B::Union{Real, Nothing}=nothing)
   X_min, X_max = MeshGrid.getMesh_AABB(mesh.X)
-  distances = calculate_edge_distances(mesh)
-  B = analyze_mesh(distances)
-  println("Grid step selected from median edge length: $(RED)$(BOLD)$(round(B, digits=4))$(RESET)")
+  if B === nothing
+    distances = calculate_edge_distances(mesh)
+    B = analyze_mesh(distances)
+    println("Grid step selected from median edge length: $(RED)$(BOLD)$(round(B, digits=4))$(RESET)")
+  else
+    println("Grid step given: $(RED)$(BOLD)$(B)$(RESET)")
+  end
   sdf_grid = []
 
   println("The time duration for 100k nodes was about 3 min. ")

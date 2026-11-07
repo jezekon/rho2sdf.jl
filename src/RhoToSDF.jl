@@ -5,7 +5,10 @@ Configuration options for density to SDF conversion.
 
 # Fields
 - `threshold_density::Union{Float64, Nothing}`: Threshold density in range [0,1]. If `nothing`, calculated automatically.
-- `sdf_grid_setup::Symbol`: Grid setup method: `:manual` or `:automatic`.
+- `sdf_grid_setup::Symbol`: Grid setup method: `:manual` (the grid step is asked for in the terminal)
+  or `:automatic` (the median edge of the input mesh). Not used when `grid_step` is set.
+- `grid_step::Union{Float64, Nothing}`: Grid step B; the cell size is max extent / floor(max extent / B),
+  as with `:manual`, but without the prompt. Default `nothing`: `sdf_grid_setup` decides.
 - `export_nodal_densities::Bool`: Whether to export nodal densities to VTU.
 - `export_raw_sdf::Bool`: Whether to export raw SDF to VTI.
 - `rbf_smoothing::Symbol`: Smoothing of the raw SDF:
@@ -28,6 +31,7 @@ Configuration options for density to SDF conversion.
 struct Rho2sdfOptions
     threshold_density::Union{Float64, Nothing}
     sdf_grid_setup::Symbol
+    grid_step::Union{Float64, Nothing}
     export_nodal_densities::Bool
     export_raw_sdf::Bool
     rbf_smoothing::Symbol
@@ -39,6 +43,7 @@ struct Rho2sdfOptions
     function Rho2sdfOptions(;
         threshold_density=nothing,
         sdf_grid_setup=:manual,
+        grid_step=nothing,
         export_nodal_densities=false,
         export_raw_sdf=false,
         rbf_smoothing=:interpolation,
@@ -68,6 +73,11 @@ struct Rho2sdfOptions
             rbf_smoothing = :interpolation
         end
 
+        # A fixed grid step must be positive
+        if grid_step !== nothing && !(grid_step > 0)
+            error("Rho2sdfOptions: grid_step must be positive, got $grid_step")
+        end
+
         # Sharpening changes the approximation weights only
         if rbf_sharpening && rbf_smoothing != :approximation
             @warn "rbf_sharpening is used by rbf_smoothing = :approximation only, not by :$rbf_smoothing. Ignoring it."
@@ -80,7 +90,7 @@ struct Rho2sdfOptions
             rbf_isocontour_only = false
         end
 
-        new(threshold_density, sdf_grid_setup, export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip, rbf_sharpening, rbf_isocontour_only)
+        new(threshold_density, sdf_grid_setup, grid_step === nothing ? nothing : Float64(grid_step), export_nodal_densities, export_raw_sdf, rbf_smoothing, domain_clip, rbf_sharpening, rbf_isocontour_only)
     end
 end
 
@@ -110,7 +120,7 @@ result = rho2sdf("chapadlo", X, IEN, rho)
 # Custom options
 options = Rho2sdfOptions(
     threshold_density=0.5,
-    sdf_grid_setup=:automatic,
+    grid_step=1.0,
     export_nodal_densities=true,
     rbf_smoothing=:approximation,
     domain_clip=true,
@@ -124,8 +134,10 @@ function rho2sdf(taskName::String, X::Vector{Vector{Float64}}, IEN::Vector{Vecto
     # Generate FEM mesh structure
     mesh = Mesh(X, IEN, rho, hex8_shape)
     
-    # Setup SDF grid based on selected method
-    sdf_grid = if options.sdf_grid_setup == :manual
+    # Setup SDF grid: a fixed grid step, or the selected method
+    sdf_grid = if options.grid_step !== nothing
+        noninteractive_sdf_grid_setup(mesh, options.grid_step)
+    elseif options.sdf_grid_setup == :manual
         interactive_sdf_grid_setup(mesh)
     else
         # Use automatic setup with default cell size factor
